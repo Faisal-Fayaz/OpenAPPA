@@ -7,6 +7,10 @@ description: Export bounded runtime telemetry to your existing observability too
 
 OpenAPPA exports traces, logs, and metrics through OpenTelemetry (OTEL). You can send this telemetry to an OTEL-compatible collector or provider.
 
+![OpenAPPA dashboard in Grafana with summary counts and tables of agent yells, blocked calls, and remedy outcomes.](/images/grafana-openappa-dashboard.png)
+
+*Example dashboard with synthetic demo and verification activity. Yell messages link to filtered diagnostic reports. Trace IDs open the corresponding operation traces.*
+
 The export covers tool proposal checks, external calls, store failures, remedies, hooks, and agent reports. Policy-check time includes external and storage time. It excludes agent model inference and tool execution. An Annotator's model call counts as external-call time.
 
 The runtime exports operational events with the `appa_telemetry` target. Optional diagnostic snapshots use the log-only `appa_yell_snapshot` target. The `-v` and `-vv` options change stderr detail independently. The exporter does not capture function arguments.
