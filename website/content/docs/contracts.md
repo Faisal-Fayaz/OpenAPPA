@@ -1021,7 +1021,7 @@ A child agent can read data without exposing it to the parent agent. `context_co
 
 OpenAPPA first offers a plan that checks the child's answer without changing it. It then offers plans that use the registered `tool_output` sanitizers without tags.
 
-The parent supplies `label` to specify the audience and trust limits for the child's answer. `label = {}` uses the parent's current audience and trust rank, so the answer cannot add restrictions to the parent. If a plan uses a sanitizer, the cleaned answer must meet those limits.
+The parent supplies `label` to specify the audience and trust limits for the child's answer. `label = {}` uses the parent's current audience and trust rank, so the answer cannot add restrictions to the parent. If a plan uses a sanitizer, the cleaned answer must meet the effective limits described below.
 
 Declaring these limits does not change either trajectory's label. The child starts at the parent's current label. Accepting a restricted or untrusted tool result then narrows the child's label. If the child resumes after the parent narrows, the parent's current label also folds into the child's label. When the answer crosses, the answer's label folds into the parent's label. If a return sanitizer cleans the answer, the cleaned answer's label is what folds.
 
