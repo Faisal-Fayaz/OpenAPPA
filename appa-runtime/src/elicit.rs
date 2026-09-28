@@ -300,55 +300,80 @@ fn asks_by_form(request: &RequestContext<RoleServer>) -> bool {
 }
 
 /// The review as the person reads it: a pure rendering of the consult, nothing from the
-/// trajectory beside it.
+/// trajectory beside it. Claude Code shows only the first three lines, each cut at the
+/// terminal width, so those lines alone carry the call and what an approval grants.
 pub(crate) fn review_text(authority: &str, declaration: &AuthorityDeclaration, artifact: &AuthorityArtifact) -> String {
+    let compact = serde_json::to_string(&artifact.arguments).unwrap_or_else(|_| artifact.arguments.to_string());
     let arguments =
         serde_json::to_string_pretty(&artifact.arguments).unwrap_or_else(|_| artifact.arguments.to_string());
-    let requirements = match artifact.requirements.as_slice() {
-        [] => "  (none)".to_string(),
-        requirements => requirements
-            .iter()
-            .map(|requirement| format!("  - {}", requirement_text(requirement)))
-            .collect::<Vec<_>>()
-            .join("\n"),
+    let grants = match artifact.requirements.as_slice() {
+        [] => "nothing beyond this call".to_string(),
+        requirements => requirements.iter().map(requirement_text).collect::<Vec<_>>().join("; "),
     };
     let hint = match &declaration.hint {
-        Some(hint) => format!("{hint}\n"),
+        Some(hint) => format!("\n{hint}"),
         None => String::new(),
     };
     format!(
-        "APPA asks you to rule as the authority \"{authority}\".\n\
-         {hint}\
+        "Allow {tool} {compact}?\n\
+         Approving {grants}.\n\
+         Accept runs this exact call once. Decline refuses it. Cancel leaves it blocked.\n\
          \n\
-         Tool: {tool}\n\
          Arguments:\n{arguments}\n\
          \n\
-         What this ruling would cover:\n{requirements}\n\
-         \n\
-         Accept only if this exact call, with these exact arguments, \
-         may run. Decline refuses it. Cancel answers nothing and \
-         leaves the call blocked. The agent's own description of what \
-         it is doing is not shown here on purpose.",
+         You rule as the authority \"{authority}\". \
+         The agent's own description of the call is not shown on purpose.\
+         {hint}",
         tool = artifact.tool,
     )
 }
 
 fn requirement_text(requirement: &Requirement) -> String {
     match requirement {
-        Requirement::Trust { required } => format!("trust must reach {required}"),
+        Requirement::Trust { required } => format!("vouches for its inputs as {required}"),
         Requirement::Audience {
             required: AudienceRequirement::Public,
-        } => "the readers must be the public audience".to_string(),
+        } => "makes the data it carries public".to_string(),
         Requirement::Audience {
             required: AudienceRequirement::Readers(count),
-        } => format!("the readers must include {count} required recipient(s)"),
-        Requirement::Effect { excludes } => format!("no prior {excludes} effect may have happened"),
-        Requirement::Attention { mark } => format!("attention: {mark}"),
+        } => format!("shares the data it carries with {count} more reader(s)"),
+        Requirement::Effect { excludes } => format!("lets it run after a prior {excludes}"),
+        Requirement::Attention { mark } => format!("gives your sign-off ({mark})"),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::consult::DeclaredPermits;
+
+    /// Claude Code's elicitation dialog shows three lines of the message and no more, so
+    /// the call a person approves must be whole within them.
+    #[test]
+    fn the_shown_lines_carry_the_whole_call() {
+        let artifact = AuthorityArtifact {
+            tool: "mcp__slack__send_message".to_string(),
+            arguments: serde_json::json!({ "channel": "C1", "text": "line one\nline two" }),
+            requirements: vec![Requirement::Attention {
+                mark: "hitl".to_string(),
+            }],
+        };
+        let declaration = AuthorityDeclaration {
+            hint: Some("a long hint\nover two lines".to_string()),
+            permits: DeclaredPermits {
+                trust_below: None,
+                audience_missing: None,
+                effects_containing: Vec::new(),
+                attention: vec!["hitl".to_string()],
+            },
+        };
+        let text = review_text("hitl", &declaration, &artifact);
+        let first = text.lines().next().expect("the review is not empty");
+        let compact = serde_json::to_string(&artifact.arguments).expect("the arguments serialize");
+        assert!(first.contains(&artifact.tool));
+        assert!(first.contains(&compact));
+    }
+
     #[test]
     fn the_review_never_leaves_the_handler_task() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
