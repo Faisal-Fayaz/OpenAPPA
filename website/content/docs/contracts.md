@@ -1023,7 +1023,7 @@ OpenAPPA first offers a plan that checks the child's answer without changing it.
 
 The parent supplies `label` to specify the audience and trust limits for the child's answer. `label = {}` uses the parent's current audience and trust rank, so the answer cannot add restrictions to the parent. If a plan uses a sanitizer, the cleaned answer must meet those limits.
 
-Declaring these limits does not change either trajectory's label. The child starts at the parent's current label. Accepting a restricted tool result then narrows the child's label, as it does in the parent trajectory. When the child's answer crosses, its label folds into the parent's label.
+Declaring these limits does not change either trajectory's label. The child starts at the parent's current label. Accepting a restricted or untrusted tool result then narrows the child's label. If the child resumes after the parent narrows, the parent's current label also folds into the child's label. When the answer crosses, the answer's label folds into the parent's label. If a return sanitizer cleans the answer, the cleaned answer's label is what folds.
 
 In the example below, a child can read internal customer data and pass its answer through `remove_customer_details`. The sanitizer must remove private details before the parent receives the answer:
 
@@ -1049,7 +1049,7 @@ The parent selects this sanitizer's plan by its `offer_id`. This request keeps t
 { "offer_id": "<the sanitizer offer ID>", "label": {} }
 ```
 
-The chosen limits bound the child's remedy plans as well as its return. On dimensions not raised by the selected return sanitizer, no plan accepts a narrowing below the declared limits. The child receives its answer requirements when it starts and submits its answer when it finishes its turn. If the answer does not meet those requirements, OpenAPPA explains the problem so the child can revise it.
+The effective limits combine the declared limits with the parent's current label. They bound the child's remedy plans as well as its return. On dimensions not raised by the selected return sanitizer, no plan accepts a narrowing below the effective limits. The child receives its answer requirements when it starts and submits its answer when it finishes its turn. If the answer does not meet those requirements, OpenAPPA explains the problem so the child can revise it.
 
 ### Structured child returns
 
