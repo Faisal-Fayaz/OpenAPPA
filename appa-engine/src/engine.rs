@@ -361,6 +361,9 @@ impl Engine {
                     sanitizer: sanitizer.clone(),
                     call: self.offer_call(&views, recorded),
                 }),
+                None if recorded.plan.required.is_empty() && recorded.plan.withholds_output() => {
+                    Ok(OfferConsult::Withhold)
+                }
                 None if recorded.plan.required.is_empty() => Ok(OfferConsult::Accept {
                     sanitizer: recorded.plan.sanitizer().cloned(),
                 }),
@@ -764,15 +767,23 @@ impl Engine {
         if matches!(report.outcome, ToolOutcome::FailureWithBody { .. }) && call.file_basis().is_none() {
             return Err(TransitionError::FailureBodyOutsideFile);
         }
-        let observed = match &report.outcome {
-            ToolOutcome::Success {
-                body: OutcomeBody::Available(raw),
-            } => Some(ObservedResult::Available(RawResultDigest::of(raw.as_str().as_bytes()))),
-            ToolOutcome::Success {
-                body: OutcomeBody::Unavailable,
-            } => Some(ObservedResult::Unavailable),
-            ToolOutcome::Failure | ToolOutcome::Indeterminate => None,
-            ToolOutcome::FailureWithBody { body } => {
+        let withholds_output = views.withholds_output(dispatch);
+        let observed = match (&report.outcome, withholds_output) {
+            (ToolOutcome::Success { .. }, true) => Some(ObservedResult::Unavailable),
+            (
+                ToolOutcome::Success {
+                    body: OutcomeBody::Available(raw),
+                },
+                false,
+            ) => Some(ObservedResult::Available(RawResultDigest::of(raw.as_str().as_bytes()))),
+            (
+                ToolOutcome::Success {
+                    body: OutcomeBody::Unavailable,
+                },
+                false,
+            ) => Some(ObservedResult::Unavailable),
+            (ToolOutcome::Failure | ToolOutcome::Indeterminate, _) => None,
+            (ToolOutcome::FailureWithBody { body }, _) => {
                 Some(ObservedResult::Available(RawResultDigest::of(body.as_str().as_bytes())))
             }
         };
@@ -787,6 +798,7 @@ impl Engine {
                 append: None,
                 follow_up: FollowUp::Outcome(OutcomeFollowUp::Closed {
                     admitted: views.admitted_body(dispatch).cloned(),
+                    withheld: withholds_output,
                 }),
             });
         }
@@ -808,6 +820,7 @@ impl Engine {
                 append: None,
                 follow_up: FollowUp::Outcome(OutcomeFollowUp::Closed {
                     admitted: views.admitted_body(dispatch).cloned(),
+                    withheld: withholds_output,
                 }),
             });
         }
@@ -827,16 +840,29 @@ impl Engine {
             return self.restage(view, &views, dispatch, report.offer_nonce, act);
         }
 
-        let admission = match &report.outcome {
-            ToolOutcome::Failure => ResultAdmission::Failure,
-            ToolOutcome::FailureWithBody { body } => ResultAdmission::FailureWithBody { body: body.clone() },
-            ToolOutcome::Indeterminate => ResultAdmission::Indeterminate,
-            ToolOutcome::Success {
-                body: OutcomeBody::Unavailable,
-            } => ResultAdmission::SuccessNoValue,
-            ToolOutcome::Success {
-                body: OutcomeBody::Available(raw),
-            } => {
+        let admission = match (&report.outcome, withholds_output) {
+            (ToolOutcome::Success { .. }, true) => ResultAdmission::SuccessNoValue,
+            (ToolOutcome::Failure, _) => ResultAdmission::Failure,
+            (ToolOutcome::FailureWithBody { .. }, true) => {
+                let Some(ObservedResult::Available(observed)) = observed else {
+                    unreachable!("a failure with a body observed its digest above")
+                };
+                ResultAdmission::FailureNoValue { observed }
+            }
+            (ToolOutcome::FailureWithBody { body }, false) => ResultAdmission::FailureWithBody { body: body.clone() },
+            (ToolOutcome::Indeterminate, _) => ResultAdmission::Indeterminate,
+            (
+                ToolOutcome::Success {
+                    body: OutcomeBody::Unavailable,
+                },
+                false,
+            ) => ResultAdmission::SuccessNoValue,
+            (
+                ToolOutcome::Success {
+                    body: OutcomeBody::Available(raw),
+                },
+                false,
+            ) => {
                 let Some(ObservedResult::Available(raw_digest)) = observed else {
                     unreachable!("an available success observed its body digest above")
                 };
@@ -950,9 +976,10 @@ impl Engine {
             Fact::ValueAdmitted { value, .. } => Some(value.body.clone()),
             _ => None,
         });
+        let withheld = views.withholds_output(dispatch);
         Ok(EngineDecision {
             append: Some(self.decided(view, crate::basis::DecidedAct::Outcome(dispatch.clone()), batch)?),
-            follow_up: FollowUp::Outcome(OutcomeFollowUp::Closed { admitted }),
+            follow_up: FollowUp::Outcome(OutcomeFollowUp::Closed { admitted, withheld }),
         })
     }
 
@@ -2436,7 +2463,7 @@ impl Engine {
                         .clone()
                 })
                 .collect(),
-            sanitizer: recorded.plan.sanitizer().cloned(),
+            output: recorded.plan.output_remedy(),
             return_policy,
             basis: views.basis_after(&advance, &subject),
             evidence: act.pinned().clone(),
@@ -2789,17 +2816,25 @@ fn approved_release(
         reviewed: given.reviewed.clone(),
         evidence: act.pinned().clone(),
     }));
-    if let Some(sanitizer) = &approval.sanitizer {
-        facts.push(Fact::OutputSanitizerBound {
+    match &approval.output {
+        Some(crate::plan::OutputRemedy::Withhold) => facts.push(Fact::OutputWithheld {
             trajectory: trajectory.clone(),
             dispatch: dispatch.clone(),
             plan: approval.plan,
-            sanitizer: sanitizer.clone(),
-            contribution: crate::plan::bound_contribution(registry, contract, sanitizer, &context)
-                .expect("the compose gate answers a spent approval's sanitizer atoms")
-                .expect("a prepared approval binds an output sanitizer enumeration found applicable"),
-            evidence: act.pinned().clone(),
-        });
+        }),
+        Some(crate::plan::OutputRemedy::Sanitize(sanitizer)) => {
+            facts.push(Fact::OutputSanitizerBound {
+                trajectory: trajectory.clone(),
+                dispatch: dispatch.clone(),
+                plan: approval.plan,
+                sanitizer: sanitizer.clone(),
+                contribution: crate::plan::bound_contribution(registry, contract, sanitizer, &context)
+                    .expect("the compose gate answers a spent approval's sanitizer atoms")
+                    .expect("a prepared approval binds an output sanitizer enumeration found applicable"),
+                evidence: act.pinned().clone(),
+            });
+        }
+        None => {}
     }
     facts
 }
@@ -4513,7 +4548,8 @@ mod tests {
         assert_eq!(
             closed.follow_up,
             FollowUp::Outcome(OutcomeFollowUp::Closed {
-                admitted: Some(body.clone())
+                admitted: Some(body.clone()),
+                withheld: false,
             })
         );
         let facts = closed.append.expect("the close appends").facts().to_vec();
@@ -4532,7 +4568,10 @@ mod tests {
         assert_eq!(repeat.append, None);
         assert_eq!(
             repeat.follow_up,
-            FollowUp::Outcome(OutcomeFollowUp::Closed { admitted: Some(body) })
+            FollowUp::Outcome(OutcomeFollowUp::Closed {
+                admitted: Some(body),
+                withheld: false,
+            })
         );
         assert_eq!(
             e.handle(
@@ -4697,7 +4736,8 @@ mod tests {
         assert_eq!(
             crossed.follow_up,
             FollowUp::Outcome(OutcomeFollowUp::Closed {
-                admitted: Some(derived)
+                admitted: Some(derived),
+                withheld: false,
             })
         );
         let facts = crossed.append.expect("the derivation appends").facts().to_vec();
@@ -4737,7 +4777,8 @@ mod tests {
             .expect("the same report answers from the record")
             .follow_up,
             FollowUp::Outcome(OutcomeFollowUp::Closed {
-                admitted: Some(derived)
+                admitted: Some(derived),
+                withheld: false,
             })
         );
         assert_eq!(
@@ -6860,7 +6901,7 @@ mod tests {
             execute_offer(&e, &log, offer, OfferOutcome::Approved(Vec::new())).expect("the offer executes"),
         );
         match approved.iter().find(|fact| matches!(fact, Fact::CallApproved { .. })) {
-            Some(Fact::CallApproved { sanitizer, .. }) => assert_eq!(sanitizer.as_ref(), plan.sanitizer()),
+            Some(Fact::CallApproved { output, .. }) => assert_eq!(output, &plan.output_remedy()),
             other => panic!("the approval carries its binding, not {other:?}"),
         }
         let log = [log, approved].concat();
@@ -11496,7 +11537,8 @@ mod tests {
         assert_eq!(
             crossed.follow_up,
             FollowUp::Outcome(OutcomeFollowUp::Closed {
-                admitted: Some(derived)
+                admitted: Some(derived),
+                withheld: false,
             })
         );
         let log = [log, crossed.append.expect("the derivation appends").facts().to_vec()].concat();

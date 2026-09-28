@@ -660,6 +660,7 @@ pub enum AuditEvent {
     SanitizerBound {
         sanitizer: String,
     },
+    OutputWithheld,
     Sanitized {
         sanitizer: String,
     },
@@ -921,6 +922,7 @@ impl RuntimeEngine {
         let engine_offer = parse_offer(offer)?;
         match self.engine.offer_consults(view, trajectory, &engine_offer).ok()? {
             OfferConsult::Accept { sanitizer: None } => Some(crate::api::OfferKind::Accept),
+            OfferConsult::Withhold => Some(crate::api::OfferKind::Withhold),
             OfferConsult::Accept {
                 sanitizer: Some(sanitizer),
             } => Some(crate::api::OfferKind::Sanitizer {
@@ -1186,6 +1188,7 @@ impl RuntimeEngine {
             Fact::OutputSanitizerBound { sanitizer, .. } => AuditEvent::SanitizerBound {
                 sanitizer: terminal_safe(sanitizer.as_str()),
             },
+            Fact::OutputWithheld { .. } => AuditEvent::OutputWithheld,
             Fact::CandidateDerived { sanitizer, .. } => AuditEvent::Sanitized {
                 sanitizer: terminal_safe(sanitizer.as_str()),
             },
@@ -1589,8 +1592,8 @@ impl RuntimeEngine {
         };
         let append = decision.append.map(ValidatedFactBatch::into_unsealed);
         let then = match decision.follow_up {
-            FollowUp::Outcome(OutcomeFollowUp::Closed { admitted }) => {
-                Next::PresentToModel(outcome_presentation(outcome, admitted))
+            FollowUp::Outcome(OutcomeFollowUp::Closed { admitted, withheld }) => {
+                Next::PresentToModel(outcome_presentation(outcome, admitted, withheld))
             }
             FollowUp::Outcome(OutcomeFollowUp::Resolve(request)) => self.resolve_or_withhold(
                 view,
@@ -1651,7 +1654,7 @@ impl RuntimeEngine {
                 ));
             }
             OfferConsult::Replay(outcome) => outcome,
-            OfferConsult::Accept { .. } => OfferOutcome::Approved(Vec::new()),
+            OfferConsult::Accept { .. } | OfferConsult::Withhold => OfferOutcome::Approved(Vec::new()),
             OfferConsult::Rewrite { sanitizer, call } => {
                 let arguments = call.canonical_arguments();
                 let source = RawResultDigest::of(arguments.canonical_bytes());
@@ -3049,7 +3052,12 @@ fn engine_outcome(outcome: &ToolOutcome) -> CoreToolOutcome {
 /// What the model reads in place of the raw result. An admitted value and the runtime's
 /// own words are separate presentations here, because a harness delivers the first as it
 /// crossed and spells its own tool names into the second.
-fn outcome_presentation(outcome: &ToolOutcome, admitted: Option<ValueBody>) -> Presentation {
+fn outcome_presentation(outcome: &ToolOutcome, admitted: Option<ValueBody>, withheld: bool) -> Presentation {
+    if withheld {
+        return Presentation::ReplaceOutput {
+            placeholder: "[appa] the result is withheld".to_string(),
+        };
+    }
     match (outcome, admitted) {
         (
             ToolOutcome::Success {
@@ -3565,6 +3573,13 @@ fn remedy_action(plan: &ExecutableRemedyPlan, registry: Option<&Registry>, targe
         }
         action
     } else {
+        if plan.withholds_output() {
+            return if needs_approval {
+                "Submit for approval, run the tool, and withhold its result".to_string()
+            } else {
+                "Run the tool and withhold its result".to_string()
+            };
+        }
         match (needs_approval, plan.narrowing().is_some(), plan.sanitizer()) {
             (true, _, Some(sanitizer)) => {
                 format!(
@@ -3889,10 +3904,10 @@ mod tests {
     use super::TrustChain;
     use super::{
         BARE_CONTROL_TOOL, EngineEvent, EngineView, ExternalEvidence, ExternalRequest, Next, OfferId, OfferNonce,
-        ProposedCall, Resolution, ReturnBounds, RuntimeEngine, SanitizerSubject, TrajectoryId, audience_wire,
-        block_feedback, remedy_instruction, remedy_lines, terminal_safe,
+        Presentation, ProposedCall, Resolution, ReturnBounds, RuntimeEngine, SanitizerSubject, TrajectoryId,
+        audience_wire, block_feedback, outcome_presentation, remedy_instruction, remedy_lines, terminal_safe,
     };
-    use crate::api::{EmbeddedPresentationOptions, ToolNaming};
+    use crate::api::{EmbeddedPresentationOptions, ToolNaming, ToolOutcome};
     use crate::consult::{AnnotationAnswer, HistoryEntry, RequiredAudienceAnswer, SanitizerPoint};
     use appa_engine::check::{Gap, RawBlock};
     use appa_engine::contract::{AudienceRequirement, DeltaAudience, HistoryRequirement, RecipientSpec};
@@ -4665,6 +4680,22 @@ mod tests {
             terminal_safe("tru\u{206A}sted"),
             "tru\u{FFFD}sted",
             "the full Cf range replaces"
+        );
+    }
+
+    #[test]
+    fn withholding_replaces_failure_output_too() {
+        assert_eq!(
+            outcome_presentation(
+                &ToolOutcome::Failure {
+                    message: "sensitive failure detail".to_string(),
+                },
+                None,
+                true,
+            ),
+            Presentation::ReplaceOutput {
+                placeholder: "[appa] the result is withheld".to_string(),
+            },
         );
     }
 }

@@ -48,7 +48,7 @@ OpenAPPA operates with three concepts:
 
 3. **Remedy Plans**
 
-   When an action does not meet its tool contract, OpenAPPA blocks it and returns the remedy plans allowed by the policy. A plan can involve cleaning data with a [sanitizer](#sanitizers), receiving approval from an [authority](#authorities), accepting a narrower audience, or isolating a sensitive read in a [subagent](#subagent-reads).
+   When an action does not meet its tool contract, OpenAPPA blocks it and returns the remedy plans allowed by the policy. A plan can involve cleaning data with a [sanitizer](#sanitizers), receiving approval from an [authority](#authorities), accepting a narrower audience, withholding a tool result, or isolating a sensitive read in a [subagent](#subagent-reads).
 
    An offered plan can still be denied by an approval service or fail during data cleaning. If no permitted remedy succeeds, the action remains blocked.
 
@@ -85,6 +85,8 @@ See [Authorities in Policy configuration](/contracts#authorities) for configurat
 ### Sanitizers
 
 A sanitizer cleans data before the agent receives it or sends it to a tool. Cleaning data before the agent sends it can allow an action that would otherwise be blocked.
+
+For a side-effecting tool result the integration can withhold, the agent can instead run the tool without receiving any result output. A successful call still records its effects, but its result adds no Value or Label restriction to the trajectory.
 
 For example, a sanitizer removes customer names and email addresses from a support ticket. The policy permits the agent to share that cleaned version in a public bug report.
 
