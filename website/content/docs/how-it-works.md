@@ -131,7 +131,7 @@ An annotator can run as a local script or an external service. When the call its
 
 A subagent reads sensitive data in a separate context and returns only what the policy allows. For example, it can summarize a private ticket and pass the summary through a sanitizer, letting the main agent use the cleaned result in a public bug report if the policy permits.
 
-Before the subagent starts, the main agent sets the return requirements, including any cleaning. These also limit what the subagent can read. OpenAPPA blocks results that do not meet them.
+Before the subagent starts, the main agent sets the return requirements, including any cleaning. This declaration does not change either trajectory's label. The subagent starts at the main agent's current label. Accepting a restricted tool result then narrows the subagent's label, as it does in the main trajectory. The return requirements limit which tool-result narrowings the subagent can accept and what final message can cross. OpenAPPA omits disallowed acceptance plans and refuses a final message that does not meet the return requirements. If an allowed final message adds restrictions, it narrows the main agent only when it crosses.
 
 See [Subagent Returns](/contracts#subagent-returns) for integration requirements and configuration.
 
