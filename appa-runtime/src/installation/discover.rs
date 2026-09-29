@@ -348,6 +348,7 @@ mod tests {
                 audiences: vec![],
                 credentials: vec![],
                 setup: None,
+                readiness: None,
                 detect: vec![],
             },
         )
