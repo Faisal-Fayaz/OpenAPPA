@@ -142,6 +142,12 @@ delta = {}
 name = "host/claude-code/ScheduleWakeup"
 delta = {}
 
+# A feedback draft is queued locally and is sent only after this user
+# approves it.
+[[policy.tool]]
+name = "host/claude-code/SendFeedback"
+delta = {}
+
 [[policy.tool]]
 name = "host/claude-code/SendUserFile"
 delta = {}
@@ -223,6 +229,54 @@ delta = { trust = "suspicious" }
 [[policy.tool]]
 name = "host/claude-code/ReadNotifications"
 delta = { trust = "suspicious" }
+
+# DesignSync reads and writes the claude.ai design-system projects this user's
+# organization shares, and other members write their files. The reads come
+# before the bare rule, which covers every write.
+[[policy.tool]]
+name = "host/claude-code/DesignSync(method:get_file)"
+delta = { trust = "suspicious", audience = ["internal"] }
+
+[[policy.tool]]
+name = "host/claude-code/DesignSync(method:get_*)"
+delta = { audience = ["internal"] }
+
+[[policy.tool]]
+name = "host/claude-code/DesignSync(method:list_*)"
+delta = { audience = ["internal"] }
+
+[[policy.tool]]
+name = "host/claude-code/DesignSync(method:report_validate)"
+delta = {}
+
+[[policy.tool]]
+name = "host/claude-code/DesignSync"
+requires = { trust = "trusted", audience = { contains = ["internal"] } }
+delta = {}
+
+# RemoteTrigger creates and runs claude.ai routines: cloud agents this policy
+# does not protect, so a routine's prompt leaves the session. A run log quotes
+# what the routine read and stays with this user.
+[[policy.tool]]
+name = "host/claude-code/RemoteTrigger(action:list_runs)"
+delta = { trust = "suspicious", audience = ["self"] }
+
+[[policy.tool]]
+name = "host/claude-code/RemoteTrigger(action:get_run_log)"
+delta = { trust = "suspicious", audience = ["self"] }
+
+[[policy.tool]]
+name = "host/claude-code/RemoteTrigger(action:list)"
+delta = { audience = ["self"] }
+
+[[policy.tool]]
+name = "host/claude-code/RemoteTrigger(action:get)"
+delta = { audience = ["self"] }
+
+[[policy.tool]]
+name = "host/claude-code/RemoteTrigger"
+requires = { trust = "trusted", audience = { contains = ["public"] } }
+delta = {}
 
 # Reporting to the OpenAPPA team that APPA is in the way. Served by the runtime
 # itself, and gated by the same algebra as any other sink that leaves this
