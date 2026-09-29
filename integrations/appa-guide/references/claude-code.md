@@ -453,15 +453,15 @@ After a successful reload, add:
 End every `init` and `adjust` run here, after a successful reload or a
 no-change result. Do not do this after a refused reload or in `explain`.
 
-Open the policy overview in the background:
+Serve the policy overview in the background, without opening a browser:
 
 ```sh
-appa ui --config <live-path>
+appa ui --config <live-path> --no-open
 ```
 
 The page shows each MCP server the policy covers, where each rule comes from
 (the root config or a battery), and each server's contracts. Tell the user in
-one sentence to review the policies there, and show the URL the command
-printed. If the port is busy, an earlier `appa ui` still serves this page:
-give its URL and do not start another. Stop the command when the user says
+one sentence to review the policies there, and give the URL the command
+printed as a link. Never open a browser. If the port is busy, an earlier
+`appa ui` still serves this page: give its URL and do not start another. Stop the command when the user says
 they are done, or leave it running if they move on to other work.
