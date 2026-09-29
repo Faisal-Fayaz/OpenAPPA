@@ -92,7 +92,7 @@ before identity verification. Three other blocks rejected malformed input. No
 tool execution errors occurred. Tau is not an attack benchmark, so these results
 do not establish net security.
 
-## Token overhead on a benign workload
+## Token overhead: 4.22% over stock on Tau
 
 Guarded OpenAPPA used a mean of 1,307,763 agent tokens per simulation. This was
 4.22% more than stock and 2.80% more than the permissive OpenAPPA agent.
