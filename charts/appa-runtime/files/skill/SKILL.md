@@ -66,6 +66,13 @@ Invoke only the `appa-guide` skill name; never invent a mode-specific skill name
 
 ## Rules that apply on every host
 
+- Use the host's documented tools and this chat for setup, configuration,
+  and policy review.
+  Never launch or recommend `appa ui`, open or link to its pages, or access
+  its HTTP endpoints through browser tools, shell commands, or other tools.
+  This includes credential setup, post-reload review, and no-change results.
+  Do not use an already-running UI as a workaround. Follow the host
+  reference for credentials and summarize policy behavior in chat.
 - The root config is the operator's source of truth. Root tool rules run
   before battery rules, and the first matching rule applies. Keep every
   root rule unless the operator explicitly approves changing or removing
