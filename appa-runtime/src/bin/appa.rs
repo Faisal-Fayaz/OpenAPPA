@@ -111,6 +111,11 @@ enum Command {
         #[arg(short = 'y', long = "yes")]
         yes: bool,
 
+        /// Select the intended recently active family on this machine by its root ID. For
+        /// Claude Code, use `cc:<session-id>`. Confirm the ID belongs to the intended session.
+        #[arg(long)]
+        trajectory: Option<String>,
+
         /// What went wrong. Read from stdin when absent.
         message: Vec<String>,
     },
@@ -298,7 +303,12 @@ fn main() -> ExitCode {
             arguments,
         } => appa_runtime::protected_launch::launch(&settings, &data_dir, &arguments),
         Command::RecordLaunch { data_dir, event } => appa_runtime::protected_launch::record(&data_dir, event),
-        Command::Yell { url, yes, message } => appa_runtime::yell::cli::run(&url, yes, message),
+        Command::Yell {
+            url,
+            yes,
+            trajectory,
+            message,
+        } => appa_runtime::yell::cli::run(&url, yes, trajectory, message),
         Command::Replay {
             config,
             modules_dir,

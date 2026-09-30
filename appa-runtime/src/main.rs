@@ -422,6 +422,9 @@ struct ReportRequestBody {
     /// Required, with no default: this is the question a person was asked, and a request that
     /// does not carry their answer has no business getting either kind of report.
     pseudonymize: bool,
+    /// A family root the caller identifies from its harness session. The runtime accepts it
+    /// only when that root is in the same recent set used by an unnamed request.
+    trajectory: Option<String>,
 }
 
 /// One finished `openappa.yell.v1` document.
@@ -448,11 +451,11 @@ async fn report(
             true => crate::yell::Mode::Pseudonymized,
             false => crate::yell::Mode::Baseline,
         },
-        // A caller here names no trajectory: it gets whichever one was recently active, or
-        // nothing. That narrows the endpoint — no session can be asked for by name — without
-        // making it a per-caller boundary. The recently active trajectory may well belong to
-        // someone else's session on this machine, and loopback is the only thing between them.
-        selection: crate::yell::Selection::Recent,
+        // A caller gets the only recently active trajectory, or can narrow that same recent
+        // set by root. It cannot ask for an older trajectory by name. This is still not a
+        // per-caller boundary: a recent trajectory may belong to another session on this
+        // machine, and loopback is the only thing between them.
+        selection: crate::yell::Selection::Recent(body.trajectory.map(crate::api::TrajectoryId)),
         harness: crate::yell::report::Harness::served(state.adapter.name),
         hostname: None,
     };

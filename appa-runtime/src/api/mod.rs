@@ -1222,12 +1222,16 @@ impl Inner {
 
     /// See [`crate::events::EventLog::recent_root`].
     #[cfg(feature = "daemon")]
-    pub(crate) fn recent_root(&self, window: std::time::Duration) -> crate::events::Recent {
+    pub(crate) fn recent_root(
+        &self,
+        window: std::time::Duration,
+        selected: Option<&TrajectoryId>,
+    ) -> crate::events::Recent {
         self.shared
             .events
             .lock()
             .expect("the event mutex is never poisoned: no panic runs while it is held")
-            .recent_root(window)
+            .recent_root(window, selected)
     }
 
     fn deployment(&self) -> Arc<Deployment> {
@@ -2229,10 +2233,12 @@ impl Runtime {
                 return yell::Projection::rules_only(serving(), mode, yell::OmittedReason::NotRequested);
             }
             yell::Selection::Vouched(root) => root,
-            yell::Selection::Recent => match yell::resolve(self.inner.recent_root(yell::RECENT_WINDOW)) {
-                Ok(root) => root,
-                Err(omitted_reason) => return yell::Projection::rules_only(serving(), mode, omitted_reason),
-            },
+            yell::Selection::Recent(selected) => {
+                match yell::resolve(self.inner.recent_root(yell::RECENT_WINDOW, selected.as_ref())) {
+                    Ok(root) => root,
+                    Err(omitted_reason) => return yell::Projection::rules_only(serving(), mode, omitted_reason),
+                }
+            }
         };
         let yelling = Some(root.clone());
         let Ok(log) = self.inner.log(&root) else {
