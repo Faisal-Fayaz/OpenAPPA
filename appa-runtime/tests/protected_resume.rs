@@ -15,7 +15,7 @@ fn appa() -> &'static Path {
 }
 
 struct Fixture {
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     bin: PathBuf,
     data: PathBuf,
     ready: PathBuf,
@@ -64,6 +64,11 @@ case "$APPA_TEST_MODE" in
     record "$first" end
     record "$start" start
     ;;
+  argv)
+    if [ "$3" = --messaging-socket-path ]; then : > "$4"; fi
+    printf '%s\n' "$@" > "$APPA_TEST_DATA/argv"
+    printf '%s' "${{APPA_PEER_ADDRESS-unset}}" > "$APPA_TEST_DATA/peer"
+    ;;
   signal)
     kill -TERM $$
     ;;
@@ -80,7 +85,7 @@ exit "${{APPA_TEST_EXIT:-0}}"
         .unwrap();
         fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
         Self {
-            _root: root,
+            root,
             bin,
             data,
             ready,
@@ -121,6 +126,22 @@ exit "${{APPA_TEST_EXIT:-0}}"
             .output()
             .unwrap()
     }
+}
+
+/// Launch the fake Claude with `XDG_RUNTIME_DIR` inside the fixture, and return
+/// the argv it saw and its `APPA_PEER_ADDRESS` ("unset" when absent).
+fn launch_recording(fixture: &Fixture, runtime: &Path, arguments: &[&str]) -> (Vec<String>, String) {
+    let status = fixture
+        .command("argv")
+        .args(arguments)
+        .env("XDG_RUNTIME_DIR", runtime)
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let argv = fs::read_to_string(fixture.data.join("argv")).unwrap();
+    let peer = fs::read_to_string(fixture.data.join("peer")).unwrap();
+    (argv.lines().map(str::to_owned).collect(), peer)
 }
 
 fn shell(path: &Path) -> String {
@@ -184,4 +205,74 @@ fn term_and_hup_are_forwarded_to_the_foreground_claude_process() {
         assert_eq!(status.code(), Some(42));
         assert_eq!(fs::read_to_string(&fixture.forwarded).unwrap(), "forwarded");
     }
+}
+
+#[test]
+fn each_claude_gets_a_private_messaging_socket_and_its_peer_address() {
+    let fixture = Fixture::new();
+    let runtime = fixture.root.path().join("runtime");
+    fs::create_dir(&runtime).unwrap();
+    let (argv, peer) = launch_recording(&fixture, &runtime, &["--resume", "x"]);
+
+    let settings = fixture.data.join("settings.json");
+    assert_eq!(argv.len(), 6, "{argv:?}");
+    let socket = PathBuf::from(&argv[3]);
+    assert_eq!(
+        argv[..],
+        [
+            "--settings",
+            settings.to_str().unwrap(),
+            "--messaging-socket-path",
+            &argv[3],
+            "--resume",
+            "x"
+        ]
+    );
+    assert_eq!(peer, format!("uds:{}", socket.display()));
+    assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    assert_eq!(socket.parent().unwrap(), runtime.join("appa"));
+    let name = socket.file_name().unwrap().to_str().unwrap();
+    let stem = name.strip_suffix(".sock").expect("the socket is a .sock file");
+    assert!(
+        stem.len() == 12 && stem.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{name}"
+    );
+    let mode = fs::metadata(runtime.join("appa")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    assert!(!socket.exists(), "the socket is removed when Claude exits");
+}
+
+#[test]
+fn a_user_messaging_socket_suppresses_clappa_s_own() {
+    let fixture = Fixture::new();
+    let runtime = fixture.root.path().join("runtime");
+    fs::create_dir(&runtime).unwrap();
+    let own = fixture.root.path().join("own.sock");
+    let (argv, peer) = launch_recording(&fixture, &runtime, &["--messaging-socket-path", own.to_str().unwrap()]);
+
+    let settings = fixture.data.join("settings.json");
+    assert_eq!(
+        argv[..],
+        [
+            "--settings",
+            settings.to_str().unwrap(),
+            "--messaging-socket-path",
+            own.to_str().unwrap()
+        ]
+    );
+    assert_eq!(peer, "unset");
+    assert!(own.exists(), "clappa leaves the user's socket alone");
+}
+
+#[test]
+fn a_shared_socket_directory_is_refused_and_claude_starts_without_an_address() {
+    let fixture = Fixture::new();
+    let runtime = fixture.root.path().join("runtime");
+    fs::create_dir_all(runtime.join("appa")).unwrap();
+    fs::set_permissions(runtime.join("appa"), fs::Permissions::from_mode(0o777)).unwrap();
+    let (argv, peer) = launch_recording(&fixture, &runtime, &[]);
+
+    let settings = fixture.data.join("settings.json");
+    assert_eq!(argv[..], ["--settings", settings.to_str().unwrap()]);
+    assert_eq!(peer, "unset");
 }

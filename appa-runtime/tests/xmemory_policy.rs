@@ -114,7 +114,8 @@ selectors = [{{ template = "members", feeds = "internal" }}]
             &runtime,
             HookEvent::SessionStart {
                 root: root(),
-                principal: None
+                principal: None,
+                address: None,
             }
         )
         .await,

@@ -3,7 +3,10 @@
 //! it between a host's adapter and the runtime.
 
 pub mod inventory;
+mod peer;
 mod wire;
+
+pub use peer::{PeerAddress, PeerDigest, PeerFrame, PeerValueError, SessionTitle};
 
 pub use wire::{
     Accepted, Adapter, AsSpoken, DecisionName, EventName, IdentifiedTool, IdentifyToolFn, NamesChildrenFn,
@@ -461,6 +464,8 @@ pub enum HookEvent {
         /// answers the `self` audience for the whole family. `None` leaves `self` to the
         /// policy's configured sources.
         principal: Option<String>,
+        /// Where this session receives peer messages, when its launcher bound one.
+        address: Option<PeerAddress>,
     },
     Prompt {
         actor: Actor,
@@ -468,6 +473,10 @@ pub enum HookEvent {
         /// The host call this prompt reports finished: a background
         /// spawn's completion notice arrives as a prompt naming its call.
         settles: Option<String>,
+        /// Set when the prompt arrived as another session's message.
+        peer: Option<PeerFrame>,
+        /// The title the host shows for this session.
+        title: Option<SessionTitle>,
     },
     /// The actor finished a turn. Nothing it released is still running,
     /// so a dispatch still open names a call the harness never ran.

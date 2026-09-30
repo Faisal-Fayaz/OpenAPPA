@@ -73,7 +73,8 @@ async fn runtime(dir: &tempfile::TempDir, extra: &str, source: Option<&str>) -> 
             &runtime,
             HookEvent::SessionStart {
                 root: root(),
-                principal: None
+                principal: None,
+                address: None,
             }
         )
         .await,

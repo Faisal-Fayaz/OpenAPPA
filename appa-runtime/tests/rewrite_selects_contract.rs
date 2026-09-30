@@ -147,7 +147,8 @@ async fn narrowed_under(
             &runtime,
             HookEvent::SessionStart {
                 root: root(),
-                principal: None
+                principal: None,
+                address: None,
             }
         )
         .await,

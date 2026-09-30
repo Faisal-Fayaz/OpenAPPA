@@ -89,6 +89,7 @@ async fn start(runtime: &Arc<Runtime>, root: &TrajectoryId) {
         HookEvent::SessionStart {
             root: root.clone(),
             principal: None,
+            address: None,
         },
     )
     .await;

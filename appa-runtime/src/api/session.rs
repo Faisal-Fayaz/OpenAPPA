@@ -1228,6 +1228,28 @@ impl Session {
         return_decision(decision)
     }
 
+    /// One peer message admitted into this trajectory at its origin's label. Nothing it has
+    /// open is settled: the message may arrive in the middle of a turn.
+    pub(crate) fn on_peer_message(
+        &self,
+        id: appa_engine::value::PeerMessageId,
+        digest: appa_engine::value::RawResultDigest,
+        origin: appa_engine::transition::PeerOrigin,
+    ) -> Result<(), EventError> {
+        let opened = self.inner.log(&self.root)?;
+        let policy = self.policy(&opened)?;
+        let report = appa_engine::transition::PeerReport {
+            trajectory: self.trajectory.clone(),
+            id,
+            digest,
+            origin,
+        };
+        self.drive(&policy, Some(opened), true, Opening::default(), |_| {
+            Ok(EngineEvent::PeerMessage(report.clone()))
+        })?;
+        Ok(())
+    }
+
     /// Close whatever calls this child still has open before it returns. Each got no outcome
     /// hook and closes as unreported, exactly as a turn end closes it.
     async fn settle_open_call(

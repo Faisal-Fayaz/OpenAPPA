@@ -124,7 +124,7 @@ mod tests {
     use std::time::SystemTime;
 
     use appa_engine::value::DispatchId;
-    use appa_runtime_api::Ruling;
+    use appa_runtime_api::{PeerAddress, PeerDigest, Ruling, SessionTitle};
 
     use super::*;
     use crate::HostActor;
@@ -174,6 +174,23 @@ mod tests {
                 },
             },
             HostObservation::TurnEnded { actor },
+            HostObservation::Addressed {
+                address: PeerAddress::parse("uds:/tmp/a.sock").expect("an address"),
+                title: Some(SessionTitle::parse("peer-b").expect("a title")),
+            },
+            HostObservation::PeerSent {
+                id: "peer-1".to_string(),
+                recipient: TrajectoryId::new("cc:recipient"),
+                digest: PeerDigest::of_body("abc"),
+                dispatch: DispatchId::new(
+                    root(),
+                    serde_json::from_value(serde_json::json!("ab".repeat(32))).expect("a digest decodes"),
+                    7,
+                ),
+            },
+            HostObservation::PeerTaken {
+                id: "peer-1".to_string(),
+            },
         ]
     }
 
@@ -192,6 +209,9 @@ mod tests {
             r#"{"kind":"prompt_seen","actor":{"root":"cc:root","child":"cc:child"}}"#,
             r#"{"kind":"prompt_settled","actor":{"root":"cc:root","child":null}}"#,
             r#"{"kind":"turn_ended","actor":{"root":"cc:root","child":"cc:child"}}"#,
+            r#"{"kind":"addressed","address":"uds:/tmp/a.sock","title":"peer-b"}"#,
+            r#"{"kind":"peer_sent","id":"peer-1","recipient":"cc:recipient","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","dispatch":{"trajectory":"cc:root","digest":"abababababababababababababababababababababababababababababababab","occurrence":7}}"#,
+            r#"{"kind":"peer_taken","id":"peer-1"}"#,
         ];
         let observations = golden_observations();
         assert_eq!(observations.len(), hosts.len());

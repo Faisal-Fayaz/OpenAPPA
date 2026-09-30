@@ -3,6 +3,7 @@
 
 pub(crate) mod files;
 mod host;
+mod peer;
 mod session;
 
 /// The fixture-only `Value` → raw-bytes helper, shared with the other
@@ -23,6 +24,7 @@ pub use appa_runtime_api::{
     Actor, OfferedRemedy, OutcomeBody, PromptKey, ProposedCall, Review, SpawnBinding, SpawnKind, SpawnRef, ToolOutcome,
     TrajectoryId,
 };
+pub(crate) use peer::{PeerSend, SEND_MESSAGE};
 pub(crate) use session::{LateOpen, Session, is_control_tool};
 
 /// Why a host could not read a root's current status.
@@ -4022,7 +4024,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &view,
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -4043,6 +4046,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
             appa_runtime_api::HookEvent::SessionStart {
                 root: later.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -4103,7 +4107,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &runtime.on(Arc::clone(&lease)),
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -4146,7 +4151,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &runtime,
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -4236,7 +4242,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                     &recorded,
                     appa_runtime_api::HookEvent::SessionStart {
                         root: root.clone(),
-                        principal: None
+                        principal: None,
+                        address: None,
                     }
                 )
                 .await,
@@ -4855,7 +4862,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &runtime,
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -4908,7 +4916,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &runtime,
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -4954,6 +4963,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
                     principal: None,
+                    address: None,
                 },
             )
             .await;
@@ -4997,6 +5007,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
                     principal: None,
+                    address: None,
                 },
             )
             .await;
@@ -5040,6 +5051,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
             appa_runtime_api::HookEvent::SessionStart {
                 root: root.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -5088,6 +5100,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
                     principal: None,
+                    address: None,
                 },
             )
             .await;
@@ -5153,6 +5166,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
             appa_runtime_api::HookEvent::SessionStart {
                 root: root.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -5204,6 +5218,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
             appa_runtime_api::HookEvent::SessionStart {
                 root: root.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -5239,6 +5254,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
                     principal: None,
+                    address: None,
                 },
             )
             .await;
@@ -5258,6 +5274,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 actor,
                 text: "go on".to_string(),
                 settles: None,
+                peer: None,
+                title: None,
             },
         )
         .await;
@@ -5312,6 +5330,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
                     principal: None,
+                    address: None,
                 },
             )
             .await;
@@ -5388,6 +5407,7 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
             appa_runtime_api::HookEvent::SessionStart {
                 root: root.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -5442,7 +5462,8 @@ delta = { audience = { resolver = "directory", argument = "customer" } }
                 &runtime,
                 appa_runtime_api::HookEvent::SessionStart {
                     root: root.clone(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,
@@ -5563,7 +5584,8 @@ url = "{url}"
                 &runtime,
                 HookEvent::SessionStart {
                     root: root(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 }
             )
             .await,

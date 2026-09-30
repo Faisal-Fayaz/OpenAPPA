@@ -794,3 +794,120 @@ async fn an_unreadable_stop_is_held_by_the_exit_code_with_nothing_printed() {
     assert_eq!(code, 2, "a stop the codec cannot read is held by the exit code");
     assert_eq!(stdout, "", "nothing has crossed, so there is nothing to replace");
 }
+
+/// A session start carries the peer address its launcher bound in `APPA_PEER_ADDRESS`; a
+/// value that is no peer address leaves the start unaddressed and is named on stderr, and
+/// no other event reads the variable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_start_posts_the_peer_address_its_launcher_bound() {
+    let posted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let recorded = posted.clone();
+    let url = serve(Router::new().route(
+        "/hook",
+        post(move |body: axum::body::Bytes| {
+            let recorded = recorded.clone();
+            async move {
+                let event = serde_json::from_slice(&body).expect("the client posts JSON");
+                recorded.lock().expect("the record locks").push(event);
+                r#"{"protocol":1,"decision":"ack"}"#
+            }
+        }),
+    ))
+    .await;
+    let session_start = r#"{"hook_event_name":"SessionStart","session_id":"client-test","source":"startup"}"#;
+    let outcomes = tokio::task::spawn_blocking(move || {
+        [
+            (session_start, Some("uds:/tmp/appa-peer/a.sock")),
+            (session_start, Some("tcp://127.0.0.1:9")),
+            (session_start, None),
+            (PRE_TOOL_USE, Some("uds:/tmp/appa-peer/a.sock")),
+        ]
+        .into_iter()
+        .map(|(event, bound)| {
+            let mut command = client_heard(&url);
+            match bound {
+                Some(bound) => command.env("APPA_PEER_ADDRESS", bound),
+                None => command.env_remove("APPA_PEER_ADDRESS"),
+            };
+            let output = finish_output(
+                child_process::spawn(&mut command).expect("the hook client spawns"),
+                event,
+            );
+            (
+                output.status.code().expect("the hook client exits with a code"),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+    })
+    .await
+    .expect("the blocking task joins");
+    assert!(outcomes.iter().all(|(code, _)| *code == 0), "{outcomes:?}");
+    assert_eq!(outcomes[0].1, "", "a valid address is no warning");
+    assert_ne!(outcomes[1].1, "", "an invalid address is named on stderr");
+    let posted = posted.lock().expect("the record locks");
+    let addresses: Vec<_> = posted.iter().map(|event| event.get("address").cloned()).collect();
+    assert_eq!(
+        addresses,
+        vec![Some(serde_json::json!("uds:/tmp/appa-peer/a.sock")), None, None, None]
+    );
+}
+
+/// A peer message the runtime could not admit refuses its prompt: the client exits 2 with the
+/// runtime's detail on stderr, and Claude Code drops the prompt instead of handing the model
+/// a message whose label was never recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_peer_message_blocks_its_prompt_with_the_runtimes_detail() {
+    let posted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let recorded = posted.clone();
+    let url = serve(Router::new().route(
+        "/hook",
+        post(move |body: axum::body::Bytes| {
+            let recorded = recorded.clone();
+            async move {
+                let event = serde_json::from_slice(&body).expect("the client posts JSON");
+                recorded.lock().expect("the record locks").push(event);
+                (
+                    axum::http::StatusCode::CONFLICT,
+                    r#"{"protocol":1,"decision":"refuse","detail":"storage failure: disk full"}"#,
+                )
+            }
+        }),
+    ))
+    .await;
+    let home = tempfile::tempdir().expect("a temp dir is creatable");
+    let frame = serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "client-test",
+        "prompt": "<cross-session-message from=\"uds:/tmp/appa-peer/a.sock\">\nhi\n</cross-session-message>",
+    })
+    .to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        let mut command = client_heard(&url);
+        command
+            .env("CLAUDE_PROJECT_DIR", home.path())
+            .env("CLAUDE_CONFIG_DIR", home.path());
+        finish_output(
+            child_process::spawn(&mut command).expect("the hook client spawns"),
+            &frame,
+        )
+    })
+    .await
+    .expect("the blocking task joins");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a refused prompt is dropped by the exit code"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("disk full"),
+        "the runtime's detail reaches the channel the harness shows"
+    );
+    let posted = posted.lock().expect("the record locks");
+    assert_eq!(posted.len(), 1, "the frame reached the runtime");
+    assert!(
+        posted[0].get("peer").is_some_and(|peer| !peer.is_null()),
+        "{:?}",
+        posted[0]
+    );
+}

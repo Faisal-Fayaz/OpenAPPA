@@ -164,6 +164,14 @@ impl RawResultDigest {
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    pub fn to_hex(&self) -> String {
+        crate::hex32::encode(&self.0)
+    }
+
+    pub fn from_hex(text: &str) -> Option<RawResultDigest> {
+        crate::hex32::decode(text).map(RawResultDigest)
+    }
 }
 
 /// Domain-separated hashing over **length-prefixed** fields.
@@ -384,10 +392,41 @@ impl ChildReturnId {
     }
 }
 
+/// The runtime's identity for one peer message: a message another protected trajectory family
+/// sent to this one. Opaque to the engine and never empty; a trajectory admits each identity once.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct PeerMessageId(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("a peer message id is not empty")]
+pub struct EmptyPeerMessageId;
+
+impl PeerMessageId {
+    pub fn new(id: impl Into<String>) -> Result<PeerMessageId, EmptyPeerMessageId> {
+        let id = id.into();
+        match id.is_empty() {
+            true => Err(EmptyPeerMessageId),
+            false => Ok(PeerMessageId(id)),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for PeerMessageId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        PeerMessageId::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
 /// How a value entered the trajectory — recorded for audit and branch attribution. The label's
 /// numeric fold does not depend on this; provenance answers *where from*, the label *what it is*.
-/// These are the admitted values, and only these: a user turn or other principal
-/// context is outside engine policy and admits nothing, so it has no provenance here.
+/// These are the admitted values, and only these. A user turn or other principal context is
+/// outside engine policy and admits nothing. A peer message is the one inflow at a user turn
+/// that is admitted: it arrives with the turn, but another protected family wrote it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Provenance {
     ToolResult {
@@ -404,6 +443,14 @@ pub enum Provenance {
         effects: crate::fact::EffectSet,
         #[serde(default, skip_serializing_if = "crate::audience::AudienceEvidence::is_empty")]
         evidence: crate::audience::AudienceEvidence,
+    },
+    /// A peer message. `sender` names the sender family's dispatch that sent it, and the
+    /// admitted label is the one that family recorded for it. `None` is an unattributed
+    /// message, admitted at [`Label::unattributed`]. The admitted body is the hex form of the
+    /// message's digest, never its text.
+    PeerMessage {
+        id: PeerMessageId,
+        sender: Option<DispatchId>,
     },
 }
 

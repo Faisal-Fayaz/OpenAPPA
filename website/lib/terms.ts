@@ -191,6 +191,8 @@ const TERMS = {
     "A spawn that starts any number of subagents under one return declaration, such as Claude Code's Workflow tool. Each subagent binds its own subagent fork, starts at the parent's label at its start, and its answer crosses the checked return path separately.",
   "root fork":
     "An independent family opened from an identified source trajectory. It freezes the source label and denials, family effects and unsettled reservations, and opening policy. Later activity stays separate; there is no spawn dispatch or child-return contract.",
+  "peer message":
+    "A message that another protected session sent to this one. It carries the sender's label at send time. A peer message from an unprotected sender, or one the runtime cannot match to a send, arrives at trust suspicious and audience public.",
 } as const satisfies Record<string, string>;
 
 /** Every chip with a definition, in declaration order. */

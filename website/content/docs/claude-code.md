@@ -105,6 +105,16 @@ The OpenAPPA block appears only when Claude Code saved a transcript that can be 
 
 Projects configured with `disableAllHooks: true` disable all hooks, preventing `clappa` from enforcing policy in that session.
 
+## Peer messages
+
+Protected sessions can message each other with Claude Code's `SendMessage` tool. The data keeps its label when it crosses to another session.
+
+`clappa` gives each session a private messaging address of the form `uds:<socket path>`. A send is allowed only when `to` is the address of a live protected session. Otherwise OpenAPPA denies the send and lists the protected peers as `title → address`.
+
+The receiving session admits each peer message with the sender's label at send time. A peer message from an unprotected session, or one the runtime cannot match to a send, arrives at trust `suspicious` and audience `public`.
+
+Local processes that run as your user are outside this boundary: they can already write the repository, the policy, and the runtime database.
+
 ## Uninstall
 
 Remove OpenAPPA's hooks and MCP registration while keeping your local policy and database:

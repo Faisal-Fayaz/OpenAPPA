@@ -532,17 +532,32 @@ a deployment an install refuses. `appa` on PATH stays, so the next
 `appa plugin install claude-code` starts from nothing. Remove a `clappa`
 shell alias separately if you added one instead of the command.
 
-## Statusline and SendMessage
+## Statusline and peer messages
 
 `clappa` starts Claude Code with `--settings <data dir>/clappa.settings.json`.
-That file holds two settings, so they apply to `clappa` sessions only, above
-your own. A plain `claude` session keeps yours, and the install never edits
-them.
+That file holds APPA's `statusLine`, so it applies to `clappa` sessions only,
+above your own. A plain `claude` session keeps yours, and the install never
+edits them.
 
-- APPA's `statusLine`.
-- `permissions.deny: ["SendMessage"]`. A message to another session leaves
-  this trajectory without its label. The agent starts a subagent with `Agent`
-  instead, and the runtime checks that subagent's final message.
+`clappa` also gives each session a messaging address. It passes
+`--messaging-socket-path <socket>` to Claude Code and sets
+`APPA_PEER_ADDRESS=uds:<socket>`. The socket is in a directory only you can
+open: `$XDG_RUNTIME_DIR/appa`, or `/tmp/appa-<uid>` when that variable is
+unset. If you pass `--messaging-socket-path` yourself, `clappa` adds neither.
+
+A protected session sends to another one with `SendMessage`:
+
+- `to` MUST be the `uds:` address of a live protected session. The runtime
+  denies any other recipient, and the denial lists the protected peers as
+  `title → address`.
+- The runtime records each send. The receiving session admits the message as
+  a peer message with the sender's label at send time, so the label travels
+  with the data.
+- A peer message the runtime cannot match to a send, or one from an
+  unprotected session, arrives at trust `suspicious` and audience `public`.
+
+Processes that run as your user are outside this boundary. They can already
+write the repository, the policy, and the runtime database.
 
 The status line shows the APPA pixel mascot plus the session's current Trust
 and Audience, read from the runtime's `GET /status`. It fails open: runtime

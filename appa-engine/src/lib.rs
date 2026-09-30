@@ -59,6 +59,22 @@
 //! No spawn dispatch or child-return contract is created. The runtime must also preserve
 //! the source family's opening policy when it creates the new log.
 //!
+//! ## Peer messages
+//!
+//! A user turn admits nothing, with one exception: a **peer message**, a message another
+//! protected family sent to this trajectory. The runtime matches it against the sender's
+//! record and reports it as [`transition::EngineEvent::PeerMessage`]. The engine admits it as
+//! one value ([`value::Provenance::PeerMessage`]), so the trajectory's label folds it like
+//! any other admitted value, and offers derived from the earlier label go stale.
+//!
+//! The value's label comes from its [`transition::PeerOrigin`]. An attributed message carries
+//! the label the sender family recorded for the dispatch that sent it. Replay never reads the
+//! sender family's log, so it takes that label as trusted log content, as it takes a root
+//! fork's origin. An unattributed message is admitted at [`label::Label::unattributed`]: the
+//! lowest trust, and a public audience. The admitted body is the digest of the message; its
+//! text never enters the log. A trajectory admits each message identity once, and never from
+//! a sender dispatch of its own family.
+//!
 //! ## File content: a pinned basis, and two labels
 //!
 //! A call that touches a file the runtime tracks carries a host-pinned [`value::FileBasis`]

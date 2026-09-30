@@ -52,6 +52,7 @@
 //! log is next read, not here: serialization removes the in-process seal, and
 //! re-validation on read is the gate.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -59,7 +60,7 @@ pub use appa_engine::fact::Fact;
 use appa_engine::profile::PolicyFileKey;
 use appa_engine::value::DispatchId;
 pub use appa_engine::value::TrajectoryId;
-use appa_runtime_api::{AdapterName, Ruling, inventory::ToolInventory};
+use appa_runtime_api::{AdapterName, PeerAddress, PeerDigest, Ruling, SessionTitle, inventory::ToolInventory};
 
 mod encoding;
 pub mod files;
@@ -185,21 +186,44 @@ pub enum HostObservation {
     PromptSettled { actor: HostActor },
     /// This actor's turn ended: its prompt mark and every vouch it still held are over.
     TurnEnded { actor: HostActor },
+    /// This family receives peer messages at `address`, under the title its host showed. The
+    /// latest one stands.
+    Addressed {
+        address: PeerAddress,
+        title: Option<SessionTitle>,
+    },
+    /// This family released a peer message to the family rooted at `recipient`, through
+    /// `dispatch`. It stays pending until a [`HostObservation::PeerTaken`] naming `id`, however
+    /// many turns end first.
+    PeerSent {
+        id: String,
+        recipient: TrajectoryId,
+        digest: PeerDigest,
+        dispatch: DispatchId,
+    },
+    /// The recipient took the peer message recorded as `id`. Appended to the sender's log, the
+    /// one the message's [`HostObservation::PeerSent`] key led the recipient to.
+    PeerTaken { id: String },
 }
 
 impl HostObservation {
     /// The key this observation names, where it names one: a standing taken, held, or spent.
     /// The store writes it beside the record so [`LogStore::roots_mentioning`] can find the
     /// families that recorded it.
-    pub fn key(&self) -> Option<&str> {
+    pub fn key(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Vouched { key, .. } | Self::Claimed { key, .. } | Self::Released { key, .. } => Some(key),
+            Self::Vouched { key, .. } | Self::Claimed { key, .. } | Self::Released { key, .. } => {
+                Some(Cow::Borrowed(key))
+            }
+            Self::Addressed { address, .. } => Some(Cow::Owned(format!("peer-address:{address}"))),
+            Self::PeerSent { recipient, .. } => Some(Cow::Owned(format!("peer:{}", recipient.as_str()))),
             Self::Inventory { .. }
             | Self::CallBound { .. }
             | Self::CallSettled { .. }
             | Self::PromptSeen { .. }
             | Self::PromptSettled { .. }
-            | Self::TurnEnded { .. } => None,
+            | Self::TurnEnded { .. }
+            | Self::PeerTaken { .. } => None,
         }
     }
 }
@@ -283,6 +307,58 @@ impl Log {
                 _ => None,
             })
             .collect()
+    }
+}
+
+/// One peer message a family released and no recipient has taken yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingPeer<'a> {
+    pub id: &'a str,
+    pub recipient: &'a TrajectoryId,
+    pub digest: &'a PeerDigest,
+    pub dispatch: &'a DispatchId,
+}
+
+/// One family's peer standing, reduced from its host records: where it receives peer
+/// messages, and what it sent that is still pending. Turn ends do not touch it; only a
+/// [`HostObservation::PeerTaken`] ends a pending message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerLedger<'a> {
+    pub address: Option<&'a PeerAddress>,
+    pub title: Option<&'a SessionTitle>,
+    pub pending: Vec<PendingPeer<'a>>,
+}
+
+impl<'a> PeerLedger<'a> {
+    pub fn fold(records: &'a [HostRecord]) -> Self {
+        records
+            .iter()
+            .fold(PeerLedger::default(), |mut ledger, record| match &record.observation {
+                HostObservation::Addressed { address, title } => PeerLedger {
+                    address: Some(address),
+                    title: title.as_ref(),
+                    ..ledger
+                },
+                HostObservation::PeerSent {
+                    id,
+                    recipient,
+                    digest,
+                    dispatch,
+                } => {
+                    ledger.pending.push(PendingPeer {
+                        id,
+                        recipient,
+                        digest,
+                        dispatch,
+                    });
+                    ledger
+                }
+                HostObservation::PeerTaken { id } => {
+                    ledger.pending.retain(|pending| pending.id != id);
+                    ledger
+                }
+                _ => ledger,
+            })
     }
 }
 
@@ -539,7 +615,7 @@ impl LogStore {
             &based_on.root,
             based_on.basis,
             encode(facts, Some(observation)),
-            observation.key(),
+            observation.key().as_deref(),
         )
     }
 
@@ -558,6 +634,18 @@ impl LogStore {
             Store::Sqlite(sqlite) => sqlite.roots_mentioning(key),
             #[cfg(feature = "postgres")]
             Store::Postgres(pg) => pg.roots_mentioning(key),
+        }
+    }
+
+    /// Every root whose host records ever named a key starting with `prefix`: the families
+    /// behind a whole kind of key, where [`LogStore::roots_mentioning`] answers for one.
+    pub fn roots_mentioning_prefix(&self, prefix: &str) -> Result<Vec<TrajectoryId>, ReadError> {
+        #[cfg(feature = "fault-injection")]
+        self.read_refused()?;
+        match &self.store {
+            Store::Sqlite(sqlite) => sqlite.roots_mentioning_prefix(prefix),
+            #[cfg(feature = "postgres")]
+            Store::Postgres(pg) => pg.roots_mentioning_prefix(prefix),
         }
     }
 
@@ -1161,6 +1249,135 @@ mod tests {
             Vec::new(),
             "a key matches whole, so one key is never a prefix of another"
         );
+    }
+
+    fn address(text: &str) -> PeerAddress {
+        PeerAddress::parse(text).expect("the fixture address parses")
+    }
+
+    fn sent(id: &str, body: &str) -> HostObservation {
+        HostObservation::PeerSent {
+            id: id.to_string(),
+            recipient: TrajectoryId::new("cc:recipient"),
+            digest: PeerDigest::of_body(body),
+            dispatch: DispatchId::new(
+                root(),
+                serde_json::from_value(serde_json::json!("ab".repeat(32))).expect("a digest decodes"),
+                1,
+            ),
+        }
+    }
+
+    fn records(observations: Vec<HostObservation>) -> Vec<HostRecord> {
+        observations
+            .into_iter()
+            .enumerate()
+            .map(|(seq, observation)| HostRecord {
+                seq: seq as u64,
+                observation,
+            })
+            .collect()
+    }
+
+    fn pending_ids<'a>(ledger: &PeerLedger<'a>) -> Vec<&'a str> {
+        ledger.pending.iter().map(|pending| pending.id).collect()
+    }
+
+    /// An address and a sent message are found by their keys: the address's family, and the
+    /// sender of a message pending for a recipient.
+    #[test]
+    fn peer_keys_find_the_addressed_family_and_the_sender() {
+        let store = opened();
+        let addressed = HostObservation::Addressed {
+            address: address("uds:/tmp/a.sock"),
+            title: None,
+        };
+        store
+            .append_host(&store.log(&root()).unwrap(), &[], &addressed)
+            .unwrap();
+        store
+            .append_host(&store.log(&root()).unwrap(), &[], &sent("m1", "hi"))
+            .unwrap();
+        store
+            .append_host(
+                &store.log(&root()).unwrap(),
+                &[],
+                &HostObservation::PeerTaken { id: "m1".to_string() },
+            )
+            .unwrap();
+        assert_eq!(
+            store.roots_mentioning("peer-address:uds:/tmp/a.sock").unwrap(),
+            vec![root()]
+        );
+        assert_eq!(store.roots_mentioning("peer:cc:recipient").unwrap(), vec![root()]);
+        assert_eq!(
+            store.roots_mentioning("peer-address:uds:/tmp/b.sock").unwrap(),
+            Vec::new()
+        );
+        assert_eq!(store.roots_mentioning_prefix("peer-address:").unwrap(), vec![root()]);
+        assert_eq!(
+            store.roots_mentioning_prefix("peer-address:uds:/tmp/b").unwrap(),
+            Vec::new()
+        );
+        assert_eq!(store.roots_mentioning_prefix("offer:").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn a_pending_peer_message_survives_turn_ends_until_it_is_taken() {
+        let actor = HostActor {
+            root: root(),
+            child: None,
+        };
+        let log = records(vec![
+            sent("m1", "hi"),
+            HostObservation::TurnEnded { actor: actor.clone() },
+            HostObservation::PromptSeen { actor: actor.clone() },
+            HostObservation::TurnEnded { actor },
+        ]);
+        assert_eq!(pending_ids(&PeerLedger::fold(&log)), vec!["m1"]);
+    }
+
+    #[test]
+    fn taking_a_peer_message_consumes_exactly_its_id() {
+        let log = records(vec![
+            sent("m1", "same body"),
+            sent("m2", "same body"),
+            sent("m3", "other body"),
+            HostObservation::PeerTaken { id: "m2".to_string() },
+            HostObservation::PeerTaken {
+                id: "unknown".to_string(),
+            },
+        ]);
+        let ledger = PeerLedger::fold(&log);
+        assert_eq!(pending_ids(&ledger), vec!["m1", "m3"]);
+        assert_eq!(ledger.pending[0].digest, &PeerDigest::of_body("same body"));
+    }
+
+    #[test]
+    fn two_messages_with_one_digest_are_two_pending_records() {
+        let log = records(vec![sent("m1", "same body"), sent("m2", "same body")]);
+        let ledger = PeerLedger::fold(&log);
+        assert_eq!(pending_ids(&ledger), vec!["m1", "m2"]);
+        assert_eq!(ledger.pending[0].digest, ledger.pending[1].digest);
+    }
+
+    #[test]
+    fn the_latest_address_stands() {
+        let title = SessionTitle::parse("peer-b").expect("a title");
+        let log = records(vec![
+            HostObservation::Addressed {
+                address: address("uds:/tmp/a.sock"),
+                title: None,
+            },
+            HostObservation::Addressed {
+                address: address("uds:/tmp/b.sock"),
+                title: Some(title.clone()),
+            },
+        ]);
+        let ledger = PeerLedger::fold(&log);
+        assert_eq!(ledger.address, Some(&address("uds:/tmp/b.sock")));
+        assert_eq!(ledger.title, Some(&title));
+        assert_eq!(PeerLedger::fold(&[]), PeerLedger::default());
     }
 
     #[test]

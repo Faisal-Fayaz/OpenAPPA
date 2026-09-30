@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::transition::ProposalBatchId;
-use crate::value::{ChildReturnId, DispatchId, ForkId, OfferId, TrajectoryId};
+use crate::value::{ChildReturnId, DispatchId, ForkId, OfferId, PeerMessageId, TrajectoryId};
 
 /// How many decisions have moved the **family's** shared policy state: effects reserved by a
 /// release, or a reservation settled or effects recorded by an outcome.
@@ -125,6 +125,7 @@ pub enum DecidedAct {
     ChildReturn(ChildReturnId),
     Binding(ForkId),
     Offer(OfferId),
+    PeerMessage(PeerMessageId),
 }
 
 /// What one decision declares it moves. `family` and `flow` move at most once in a decision;

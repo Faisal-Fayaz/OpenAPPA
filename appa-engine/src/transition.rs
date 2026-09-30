@@ -140,10 +140,8 @@ impl SpawnMark {
 }
 
 /// One act the engine decides. A closed enum: an external operational failure is not an
-/// event, and neither is a request, user turn, transcript, or host run.
-///
-/// Tool outcome, offer execution, child return and fork binding join it as they move off the
-/// composed operations.
+/// event, and neither is a request, user turn, transcript, or host run. A peer message that
+/// arrives with a user turn is an event, because another protected family wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineEvent {
     Proposals(ProposalBatch),
@@ -151,6 +149,44 @@ pub enum EngineEvent {
     ChildReturn(ChildReport),
     BindFork(ForkBinding),
     ExecuteOffer(OfferExecution),
+    PeerMessage(PeerReport),
+}
+
+/// One peer message the runtime matched for a receiving trajectory: its identity, the digest
+/// of its body, and where it came from. The body itself never reaches the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerReport {
+    pub trajectory: TrajectoryId,
+    pub id: crate::value::PeerMessageId,
+    pub digest: RawResultDigest,
+    pub origin: PeerOrigin,
+}
+
+/// Who vouches for a peer message's label. `Attributed` names the sender family's dispatch
+/// that sent it and the label that family's log recorded for it; the runtime reads both from
+/// the sender's record. `Unattributed` is a message no sender record matches, admitted at
+/// [`Label::unattributed`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerOrigin {
+    Attributed { sender: DispatchId, label: Label },
+    Unattributed,
+}
+
+impl PeerOrigin {
+    /// The label a message of this origin is admitted at.
+    pub fn label(&self) -> Label {
+        match self {
+            PeerOrigin::Attributed { label, .. } => label.clone(),
+            PeerOrigin::Unattributed => Label::unattributed(),
+        }
+    }
+
+    pub fn sender(&self) -> Option<&DispatchId> {
+        match self {
+            PeerOrigin::Attributed { sender, .. } => Some(sender),
+            PeerOrigin::Unattributed => None,
+        }
+    }
 }
 
 /// One offer the agent selected, and what the runtime got back from the authorities it names.
@@ -423,6 +459,10 @@ pub enum FollowUp {
         position: usize,
         error: crate::engine::EngineError,
     },
+    /// The peer message was admitted at `label`.
+    PeerAdmitted {
+        label: Label,
+    },
 }
 
 /// Why the boundary refused an event outright. A policy block is a decision, not an error: this
@@ -515,6 +555,10 @@ pub enum TransitionError {
     ReturnBelowFloor { floor: Label },
     #[error(transparent)]
     ReturnPolicy(#[from] crate::plan::ReturnPolicyRefusal),
+    #[error("this trajectory already admitted a peer message under this id")]
+    PeerMessageRepeated,
+    #[error("the peer message names a sender dispatch of the receiving family")]
+    SameFamilyPeer,
 }
 
 impl From<crate::label::MembershipNeeded> for TransitionError {
@@ -786,8 +830,12 @@ pub enum TransitionRefusal {
         needed.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
     )]
     UnansweredDecision { needed: Vec<crate::label::SymbolicAtom> },
-    #[error("a second value is admitted for one dispatch or child return")]
+    #[error("a second value is admitted for one dispatch, child return or peer message")]
     RepeatAdmission,
+    #[error("a peer message admission names a sender dispatch of its own family")]
+    SameFamilyPeer,
+    #[error("a peer message admission persists a body other than its digest")]
+    PersistedPeerBody,
     #[error("admitted value names a dispatch not opened earlier in the log")]
     UnknownDispatch,
     #[error("admitted value names a dispatch of another trajectory")]
@@ -2649,6 +2697,37 @@ impl<'a> Sequence<'a> {
                 *crossing = Crossing::Admitted;
                 Ok(())
             }
+            // An attributed label is trusted log content, as a root fork's origin is: replay
+            // never reads the sender family's log, so it cannot re-derive the label.
+            Provenance::PeerMessage { id, sender } => {
+                if !self
+                    .declared
+                    .as_ref()
+                    .is_some_and(|open| open.act == crate::basis::DecidedAct::PeerMessage(id.clone()))
+                {
+                    return Err(TransitionRefusal::UndeclaredAdmission);
+                }
+                let views = self.projection.view(trajectory);
+                if views.has_ended(trajectory) {
+                    return Err(TransitionRefusal::BranchEnded);
+                }
+                if views.peer_message_admitted(id) {
+                    return Err(TransitionRefusal::RepeatAdmission);
+                }
+                if sender
+                    .as_ref()
+                    .is_some_and(|sender| self.projection.is_opened(sender.trajectory()))
+                {
+                    return Err(TransitionRefusal::SameFamilyPeer);
+                }
+                if RawResultDigest::from_hex(value.body.as_str()).is_none() {
+                    return Err(TransitionRefusal::PersistedPeerBody);
+                }
+                if sender.is_none() && value.label != Label::unattributed() {
+                    return Err(TransitionRefusal::ForgedLabel);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -3378,6 +3457,13 @@ fn belongs_to(sequence: &Sequence<'_>, act: &crate::basis::DecidedAct, fact: &Fa
             },
         ) => confines(sequence, act, dispatch),
         (DecidedAct::Offer(_), Fact::Denial { .. }) => true,
+        (
+            DecidedAct::PeerMessage(act),
+            Fact::ValueAdmitted {
+                provenance: crate::value::Provenance::PeerMessage { id, .. },
+                ..
+            },
+        ) => id == act,
         _ => false,
     }
 }

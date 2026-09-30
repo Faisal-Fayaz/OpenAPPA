@@ -618,6 +618,22 @@ impl PostgresStore {
         Ok(roots.into_iter().map(TrajectoryId::new).collect())
     }
 
+    /// See [`LogStore::roots_mentioning_prefix`].
+    pub(super) fn roots_mentioning_prefix(&self, prefix: &str) -> Result<Vec<TrajectoryId>, ReadError> {
+        let prefix = prefix.to_owned();
+        let roots = self.query(move |client| {
+            Ok(client
+                .query(
+                    "SELECT DISTINCT root FROM openappa_host_keys WHERE left(key, char_length($1::text)) = $1::text ORDER BY root",
+                    &[&prefix],
+                )?
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>())
+        })?;
+        Ok(roots.into_iter().map(TrajectoryId::new).collect())
+    }
+
     pub(super) fn append(
         &self,
         root: &TrajectoryId,

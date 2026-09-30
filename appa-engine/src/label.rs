@@ -967,6 +967,13 @@ impl Label {
         }
     }
 
+    /// The unattributed label: the lowest rank, and a public audience. A peer message no
+    /// sender record vouches for is admitted at it — anyone may have written it, and it holds
+    /// nothing a reader must not see. Not the bottom label, whose audience is nobody.
+    pub fn unattributed() -> Self {
+        Label::new(Trust::new(0), Audience::public())
+    }
+
     /// The restrictive meet: minimum trust, intersect audience (union the clause sets).
     /// Commutative, associative, idempotent, and it never widens either dimension.
     pub fn combine(&self, other: &Label) -> Label {

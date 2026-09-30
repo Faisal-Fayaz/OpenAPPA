@@ -83,7 +83,8 @@ max_body_bytes = 1048576
             &runtime,
             HookEvent::SessionStart {
                 root: root(),
-                principal: None
+                principal: None,
+                address: None,
             }
         )
         .await,

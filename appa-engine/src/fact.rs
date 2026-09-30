@@ -604,4 +604,23 @@ mod tests {
         let wire = serde_json::to_string(&fact).expect("a fact serializes");
         assert_eq!(serde_json::from_str::<Fact>(&wire).expect("a fact deserializes"), fact);
     }
+
+    #[test]
+    fn a_peer_admission_keeps_its_wire_shape() {
+        let digest = RawResultDigest::of(b"message");
+        let fact = Fact::ValueAdmitted {
+            trajectory: TrajectoryId::new("t"),
+            value: LabeledValue::new(crate::value::ValueBody::new(digest.to_hex()), Label::unattributed()),
+            provenance: Provenance::PeerMessage {
+                id: crate::value::PeerMessageId::new("m1").expect("the id is not empty"),
+                sender: None,
+            },
+        };
+        let wire = serde_json::to_value(&fact).expect("a fact serializes");
+        assert_eq!(
+            wire["ValueAdmitted"]["provenance"],
+            json!({ "PeerMessage": { "id": "m1", "sender": null } })
+        );
+        assert_eq!(serde_json::from_value::<Fact>(wire).expect("a fact deserializes"), fact);
+    }
 }

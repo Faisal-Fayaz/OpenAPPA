@@ -127,6 +127,8 @@ static DECIDED_ACT: Table = Table {
         ("ChildReturn", Rule::Table(&CHILD_RETURN_ID)),
         ("Binding", Rule::Table(&FORK_ID)),
         ("Offer", DIGEST),
+        // The runtime's own random id for one peer message: it names nothing.
+        ("PeerMessage", Rule::Keep),
     ],
 };
 
@@ -368,6 +370,11 @@ static PROVENANCE_CHILD_RETURN: Table = Table {
     entries: &[("child", TRAJECTORY), ("id", Rule::Table(&CHILD_RETURN_ID))],
 };
 
+static PROVENANCE_PEER_MESSAGE: Table = Table {
+    name: "Provenance::PeerMessage",
+    entries: &[("id", Rule::Keep), ("sender", Rule::Table(&DISPATCH_ID))],
+};
+
 static PROVENANCE_PROVIDER_RUN: Table = Table {
     name: "Provenance::ProviderRun",
     entries: &[
@@ -385,6 +392,7 @@ static PROVENANCE: Table = Table {
         ("ToolResult", Rule::Table(&PROVENANCE_TOOL_RESULT)),
         ("ChildReturn", Rule::Table(&PROVENANCE_CHILD_RETURN)),
         ("ProviderRun", Rule::Table(&PROVENANCE_PROVIDER_RUN)),
+        ("PeerMessage", Rule::Table(&PROVENANCE_PEER_MESSAGE)),
     ],
 };
 

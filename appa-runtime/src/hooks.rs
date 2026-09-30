@@ -4,13 +4,14 @@
 use appa_engine::label::ReaderId;
 use appa_engine::value::DispatchId as EngineDispatchId;
 use appa_runtime_api::{
-    Accepted, Actor, Adapter, HookDecision, HookEvent, ParseRefusal, PromptKey, ProposedCall, Ruling, SpawnKind,
-    SpawnRef, ToolOutcome, TrajectoryId, WireDecision, WireEvent,
+    Accepted, Actor, Adapter, HookDecision, HookEvent, ParseRefusal, PeerAddress, PeerFrame, PromptKey, ProposedCall,
+    Ruling, SessionTitle, SpawnKind, SpawnRef, ToolOutcome, TrajectoryId, WireDecision, WireEvent,
 };
 
 use crate::api::{
-    ChildReturnDecision, EmbeddedHookOutcome, EmbeddedPresentationOptions, EventError, LateOpen, OfferId,
-    RemedyPresentation, Runtime, Session, SpawnResultDecision, ToolCallDecision, ToolResultDecision, is_control_tool,
+    ChildReturnDecision, EmbeddedHookOutcome, EmbeddedPresentationOptions, EventError, LateOpen, OfferId, PeerSend,
+    RemedyPresentation, Runtime, SEND_MESSAGE, Session, SpawnResultDecision, ToolCallDecision, ToolResultDecision,
+    is_control_tool,
 };
 
 fn wire(decision: &HookDecision) -> serde_json::Value {
@@ -351,8 +352,18 @@ async fn dispatch_event(
         options: presentation_options,
     };
     match event {
-        HookEvent::SessionStart { root, principal } => dispatcher.session_start(root, principal),
-        HookEvent::Prompt { actor, settles, .. } => dispatcher.prompt(actor, settles),
+        HookEvent::SessionStart {
+            root,
+            principal,
+            address,
+        } => dispatcher.session_start(root, principal, address),
+        HookEvent::Prompt {
+            actor,
+            text,
+            settles,
+            peer,
+            title,
+        } => dispatcher.prompt(actor, text, settles, peer, title),
         HookEvent::TurnEnd { actor } => dispatcher.turn_end(actor).await,
         HookEvent::ToolCall {
             actor,
@@ -400,10 +411,23 @@ struct Dispatcher<'a> {
 }
 
 impl Dispatcher<'_> {
-    fn session_start(&mut self, root: TrajectoryId, principal: Option<String>) -> HookDecision {
+    /// A start that names the address its launcher bound makes the family reachable by peer
+    /// messages. An address that did not land leaves the family unreachable, which refuses
+    /// every send to it, so the start goes on.
+    fn session_start(
+        &mut self,
+        root: TrajectoryId,
+        principal: Option<String>,
+        address: Option<PeerAddress>,
+    ) -> HookDecision {
         let runtime = self.runtime;
         let opened = session_principal(principal.as_deref())
             .and_then(|principal| open_or_reopen(runtime, &root, principal, self.options.clone()));
+        if let (Ok(_), Some(address)) = (&opened, &address)
+            && let Err(error) = runtime.record_address(&root, address)
+        {
+            tracing::warn!(root = %root.0, %error, "the session's peer address was not recorded");
+        }
         match opened {
             Ok(_) => match runtime.live(&root, &root) {
                 Ok(()) if runtime.file_tracking_enabled() => HookDecision::Context {
@@ -438,16 +462,52 @@ impl Dispatcher<'_> {
     /// did not land leaves the interrupted call open until the turn ends, which is what
     /// happens anyway when no prompt hook arrives at all.
     /// A prompt that reports a background call finished also closes that call.
-    fn prompt(&mut self, actor: Actor, settles: Option<String>) -> HookDecision {
-        if let Err(error) = self.runtime.record_prompt(&actor) {
-            tracing::warn!(root = %actor.root.0, %error, "the prompt left no mark");
+    ///
+    /// A peer frame is not the user's turn: it may arrive in the middle of one, so it leaves
+    /// no mark and settles nothing. It is admitted into the root, and a message that cannot
+    /// be admitted refuses the prompt, so it never reaches the model unlabeled.
+    fn prompt(
+        &mut self,
+        actor: Actor,
+        text: String,
+        settles: Option<String>,
+        peer: Option<PeerFrame>,
+        title: Option<SessionTitle>,
+    ) -> HookDecision {
+        if let Some(title) = &title
+            && let Err(error) = self.runtime.record_title(&actor.root, title)
+        {
+            tracing::warn!(root = %actor.root.0, %error, "the session's title was not recorded");
         }
+        let decision = match peer {
+            Some(frame) => self.peer_prompt(&actor.root, &frame, &text),
+            None => {
+                if let Err(error) = self.runtime.record_prompt(&actor) {
+                    tracing::warn!(root = %actor.root.0, %error, "the prompt left no mark");
+                }
+                HookDecision::Ack
+            }
+        };
         if let Some(call_id) = settles
             && let Err(error) = self.runtime.record_call_settled(&actor, call_id)
         {
             tracing::warn!(root = %actor.root.0, %error, "the finished call was not recorded");
         }
-        HookDecision::Ack
+        decision
+    }
+
+    fn peer_prompt(&mut self, root: &TrajectoryId, frame: &PeerFrame, text: &str) -> HookDecision {
+        let admitted = open_or_reopen(self.runtime, root, None, self.options.clone()).and_then(|session| {
+            let matched = self.runtime.peer_match(root, frame, text)?;
+            session.on_peer_message(matched.id, matched.digest, matched.origin)
+        });
+        match admitted {
+            Ok(()) => HookDecision::Ack,
+            Err(error) => {
+                tracing::warn!(root = %root.0, %error, "the peer message was not admitted, so the prompt is refused");
+                refuse(error.to_string())
+            }
+        }
     }
 
     /// A turn end gates nothing, so it answers `Ack` whatever happens. The refusal families
@@ -509,6 +569,14 @@ impl Dispatcher<'_> {
         if is_control_tool(&call.tool) {
             return control_call(self.runtime, &actor, &call, ruling);
         }
+        let peer = match call.tool == SEND_MESSAGE {
+            true => match self.runtime.peer_send(&actor.root, &call) {
+                Ok(PeerSend::Resolved { recipient, digest }) => Some((recipient, digest)),
+                Ok(PeerSend::Refused { feedback }) => return deny(feedback),
+                Err(error) => return fold(error, Refusal::Deny),
+            },
+            false => None,
+        };
         match on_actor(self.runtime, &actor, missing_start, self.options, |session| {
             let call = call.clone();
             let call_id = call_id.clone();
@@ -521,6 +589,15 @@ impl Dispatcher<'_> {
                 spawn,
                 dispatch: opened,
             }) => {
+                // The send is recorded before it is released: a message that arrives with no
+                // record would cross unattributed, which is not the label it left with.
+                if let Some((recipient, digest)) = peer
+                    && let Err(error) = self
+                        .runtime
+                        .record_peer_sent(&actor.root, recipient, digest, opened.clone())
+                {
+                    return refuse(error.to_string());
+                }
                 *self.dispatch = Some(opened);
                 vouch_call(self.runtime, &actor, &call);
                 HookDecision::AllowCall { spawn }
@@ -1994,6 +2071,7 @@ mod tests {
             HookEvent::SessionStart {
                 root: root.clone(),
                 principal: None,
+                address: None,
             },
         )
         .await;
@@ -2021,6 +2099,8 @@ mod tests {
                 actor: actor.clone(),
                 text: "approve".into(),
                 settles: None,
+                peer: None,
+                title: None,
             },
         )
         .await;

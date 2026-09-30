@@ -66,7 +66,7 @@ pub(crate) use appa_engine::transition::EngineView;
 use appa_engine::transition::{
     ChildFollowUp, ChildReport, ChildSubmission, EngineEvent as CoreEvent, Evidence, EvidenceRequest, FollowUp,
     ForkBinding, OfferConsult, OfferExecution, OfferFollowUp, OfferOutcome, OutcomeBody as CoreOutcomeBody,
-    OutcomeFollowUp, ProposalBatch, ProposalBatchId, ProposedCall as CoreProposedCall, Released, SpawnMark,
+    OutcomeFollowUp, PeerReport, ProposalBatch, ProposalBatchId, ProposedCall as CoreProposedCall, Released, SpawnMark,
     ToolOutcome as CoreToolOutcome, ToolReport, TransitionError, TransitionRefusal, ValidatedFactBatch,
 };
 use appa_engine::value::{
@@ -294,6 +294,7 @@ pub enum EngineEvent {
         value: Option<String>,
         evidence: Vec<ExternalEvidence>,
     },
+    PeerMessage(PeerReport),
 }
 
 /// What `execute_remedy_plan` carries beside the offer id: the floor the child's return may
@@ -417,6 +418,8 @@ impl From<&TransitionRefusal> for ReplayRefusalClass {
             TransitionRefusal::ForeignEvidence(evidence) => evidence.into(),
             TransitionRefusal::UnansweredDecision { .. } => ReplayRefusalClass("unanswered_decision"),
             TransitionRefusal::RepeatAdmission => ReplayRefusalClass("repeat_admission"),
+            TransitionRefusal::SameFamilyPeer => ReplayRefusalClass("same_family_peer"),
+            TransitionRefusal::PersistedPeerBody => ReplayRefusalClass("persisted_peer_body"),
             TransitionRefusal::UnknownDispatch => ReplayRefusalClass("unknown_dispatch"),
             TransitionRefusal::ForeignDispatch => ReplayRefusalClass("foreign_dispatch"),
             TransitionRefusal::ForkBasisMismatch => ReplayRefusalClass("fork_basis_mismatch"),
@@ -1256,6 +1259,29 @@ impl RuntimeEngine {
             EngineEvent::ChildReturn { child, value, evidence } => {
                 self.child_return(view, &child, value, &evidence, presentation)
             }
+            EngineEvent::PeerMessage(report) => self.peer_message(view, report),
+        }
+    }
+
+    fn peer_message(&self, view: &EngineView, report: PeerReport) -> Result<EngineDecision, EngineRefusal> {
+        let decision = self
+            .engine
+            .handle(view, CoreEvent::PeerMessage(report))
+            .map_err(|error| match error {
+                TransitionError::BranchEnded => EngineRefusal::Ended,
+                error => EngineRefusal::Invariant {
+                    detail: format!("admitting a peer message: {error}"),
+                },
+            })?;
+        let append = decision.append.map(ValidatedFactBatch::into_unsealed);
+        match decision.follow_up {
+            FollowUp::PeerAdmitted { .. } => Ok(EngineDecision {
+                append,
+                then: Next::Done,
+            }),
+            other => Err(EngineRefusal::Invariant {
+                detail: format!("a peer message produced a non-peer follow-up: {other:?}"),
+            }),
         }
     }
 

@@ -442,7 +442,7 @@ impl Projection {
                         provenance: provenance.clone(),
                         body: match provenance {
                             Provenance::ToolResult { .. } | Provenance::ProviderRun { .. } => Some(value.body.clone()),
-                            Provenance::ChildReturn { .. } => None,
+                            Provenance::ChildReturn { .. } | Provenance::PeerMessage { .. } => None,
                         },
                     });
                     if let Provenance::ToolResult { dispatch } = provenance {
@@ -753,7 +753,9 @@ impl Projection {
             .iter()
             .filter_map(|value| match &value.provenance {
                 Provenance::ToolResult { dispatch } => Some(dispatch.clone()),
-                Provenance::ChildReturn { .. } | Provenance::ProviderRun { .. } => None,
+                Provenance::ChildReturn { .. } | Provenance::ProviderRun { .. } | Provenance::PeerMessage { .. } => {
+                    None
+                }
             })
             .collect()
     }
@@ -878,6 +880,21 @@ impl Views<'_> {
             Provenance::ToolResult { dispatch: opened } if opened == dispatch => value.body.as_ref(),
             _ => None,
         })
+    }
+
+    /// Has the scoped trajectory already admitted the peer message under this identity?
+    pub(crate) fn peer_message_admitted(&self, id: &crate::value::PeerMessageId) -> bool {
+        self.projection
+            .local
+            .get(self.trajectory)
+            .into_iter()
+            .flatten()
+            .any(|value| {
+                matches!(
+                    &self.projection.values[value.index() as usize].provenance,
+                    Provenance::PeerMessage { id: admitted, .. } if admitted == id
+                )
+            })
     }
 
     /// Does this value belong to the scoped trajectory? Read by the block feedback that names a
@@ -1317,7 +1334,7 @@ impl Views<'_> {
     /// The established bound this dispatch pinned to receive its result against. Every
     /// confined candidate on this dispatch measures its residual here, so admission never asks for
     /// a race-dependent second acceptance when the live fold has moved since the opening.
-    pub(crate) fn receiving_bound(&self, dispatch: &DispatchId) -> Option<&Label> {
+    pub fn receiving_bound(&self, dispatch: &DispatchId) -> Option<&Label> {
         self.projection.receiving_bounds.get(dispatch)
     }
 

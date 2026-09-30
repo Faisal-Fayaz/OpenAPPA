@@ -465,7 +465,8 @@ mod tests {
             render(
                 &HookEvent::SessionStart {
                     root: root(),
-                    principal: None
+                    principal: None,
+                    address: None,
                 },
                 &HookDecision::Context {
                     text: "available file tools".into()
@@ -630,6 +631,7 @@ mod tests {
                 HookEvent::SessionStart {
                     root: root(),
                     principal: None,
+                    address: None,
                 },
                 [
                     "empty", "allow", "allow", "deny", "block", "block", "block", "block", "context", "error",
@@ -644,6 +646,8 @@ mod tests {
                     },
                     text: "do the thing".to_string(),
                     settles: None,
+                    peer: None,
+                    title: None,
                 },
                 [
                     "empty", "allow", "allow", "deny", "block", "block", "block", "block", "empty", "error",

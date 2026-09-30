@@ -128,7 +128,8 @@ async fn runtime(dir: &tempfile::TempDir) -> (Arc<Runtime>, Classifier) {
             &runtime,
             HookEvent::SessionStart {
                 root: root(),
-                principal: None
+                principal: None,
+                address: None,
             }
         )
         .await,

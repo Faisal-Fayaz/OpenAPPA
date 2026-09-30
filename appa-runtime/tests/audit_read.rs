@@ -102,6 +102,7 @@ async fn deployment(dir: &tempfile::TempDir) -> Arc<Runtime> {
         HookEvent::SessionStart {
             root: root(),
             principal: None,
+            address: None,
         },
     )
     .await;
@@ -421,6 +422,7 @@ async fn attest_deployment(dir: &tempfile::TempDir) -> Arc<Runtime> {
         HookEvent::SessionStart {
             root: root(),
             principal: None,
+            address: None,
         },
     )
     .await;

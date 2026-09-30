@@ -58,6 +58,10 @@ impl HostState {
                 | HostObservation::CallSettled { .. }
                 | HostObservation::PromptSeen { .. }
                 | HostObservation::PromptSettled { .. } => {}
+                // Peer standing outlives turns, so it is reduced apart, by `PeerLedger::fold`.
+                HostObservation::Addressed { .. }
+                | HostObservation::PeerSent { .. }
+                | HostObservation::PeerTaken { .. } => {}
                 HostObservation::Vouched { actor, key, ruling } => {
                     let (Some(key), actor) = (recorded_key(key), actor_of(actor)) else {
                         continue;

@@ -209,6 +209,16 @@ impl Sqlite {
         Ok(roots.into_iter().map(TrajectoryId::new).collect())
     }
 
+    pub(crate) fn roots_mentioning_prefix(&self, prefix: &str) -> Result<Vec<TrajectoryId>, ReadError> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare("SELECT DISTINCT root FROM host_keys WHERE substr(key, 1, length(?1)) = ?1 ORDER BY root ASC")?;
+        let roots = statement
+            .query_map(params![prefix], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(roots.into_iter().map(TrajectoryId::new).collect())
+    }
+
     pub(crate) fn claim_operation(&self, request: &OperationRequest) -> Result<OperationClaim, ReceiptError> {
         immediate(&mut self.connection(), |connection| {
             let claim = resolve_operation_claim(read_operation(connection, &request.key)?, request)?;
@@ -354,7 +364,7 @@ impl Appender<'_> {
             for (root, observation) in records {
                 let at = position(transaction, root)?;
                 let key = observation.and_then(HostObservation::key);
-                insert_batch(transaction, root, at, &encode(&[], *observation), key)?;
+                insert_batch(transaction, root, at, &encode(&[], *observation), key.as_deref())?;
             }
             Ok(())
         })

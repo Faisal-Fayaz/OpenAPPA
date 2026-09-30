@@ -23,9 +23,9 @@
 # A tool neither this policy nor a battery names gets a per-call contract from
 # the `*` Annotator at the end.
 #
-# `clappa` starts Claude Code with `SendMessage` denied: a message to a peer
-# session leaves this trajectory without its label. The agent starts a
-# subagent with `Agent` instead, whose final message is checked.
+# `clappa` gives each Claude Code session a messaging address. A `SendMessage`
+# call reaches another protected session as a peer message that carries this
+# session's label; the runtime denies a send to any other recipient.
 #
 # The built-in tool set varies by Claude Code version; regenerate the list from
 # a live session when it drifts.
@@ -147,6 +147,12 @@ delta = {}
 
 [[policy.tool]]
 name = "host/claude-code/ScheduleWakeup"
+delta = {}
+
+# The runtime admits a send only to a live protected session, and the message
+# arrives there with this session's label.
+[[policy.tool]]
+name = "host/claude-code/SendMessage"
 delta = {}
 
 # A feedback draft is queued locally and sent only after this user approves it.
@@ -297,9 +303,9 @@ name = "host/claude-code/WebSearch"
 requires = { audience = { contains = ["public"] } }
 delta = { trust = "suspicious" }
 
-# Another session's message and a resource of any MCP server arrive without
-# the label of whoever wrote them. GitHub notifications carry comments anyone
-# can write.
+# A Remote Control relay message and a resource of any MCP server arrive
+# without the label of whoever wrote them. GitHub notifications carry comments
+# anyone can write.
 [[policy.tool]]
 name = "host/claude-code/FetchInboxMessage"
 delta = { trust = "suspicious" }

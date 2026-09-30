@@ -21,8 +21,8 @@ use crate::registry::{LoadError, Registry, ToolKind};
 use crate::transition::{
     Blocked, ChildFollowUp, ChildReport, ChildSubmission, Confined, EngineDecision, EngineEvent, EngineView, Evidence,
     EvidenceRequest, FollowUp, ForkBinding, OfferExecution, OfferFollowUp, OfferOutcome, OutcomeBody, OutcomeFollowUp,
-    ProposalBatch, Released, Sequence, Settled, SettledOutcome, SpawnMark, ToolOutcome, ToolReport, TransitionError,
-    TransitionRefusal, ValidatedFactBatch,
+    PeerReport, ProposalBatch, Released, Sequence, Settled, SettledOutcome, SpawnMark, ToolOutcome, ToolReport,
+    TransitionError, TransitionRefusal, ValidatedFactBatch,
 };
 use crate::value::{
     CanonicalDigest, ChildReturnId, DispatchId, ForkId, LabeledValue, Provenance, RawResultDigest, ResolvedCall,
@@ -193,8 +193,8 @@ impl Engine {
         advance: crate::basis::BasisAdvance,
         facts: Vec<Fact>,
     ) -> Vec<Fact> {
-        // A record bound to the act it lands under — an offer, an approval, a provider
-        // admission — needs the act declared over it even when nothing moves. So does a
+        // A record bound to the act it lands under — an offer, an approval, a provider or
+        // peer admission — needs the act declared over it even when nothing moves. So does a
         // record pinning audience evidence: the declaration delimits the per-act audit
         // bracket at replay, and evidence justified by a neighboring act's asks would
         // otherwise pass a full-log replay that the live seal refuses.
@@ -204,7 +204,8 @@ impl Engine {
                 Fact::OfferOpened { .. }
                     | Fact::CallApproved { .. }
                     | Fact::ValueAdmitted {
-                        provenance: crate::value::Provenance::ProviderRun { .. },
+                        provenance: crate::value::Provenance::ProviderRun { .. }
+                            | crate::value::Provenance::PeerMessage { .. },
                         ..
                     }
             ) || fact.audience_evidence().is_some_and(|evidence| !evidence.is_empty())
@@ -237,6 +238,7 @@ impl Engine {
             EngineEvent::Proposals(batch) => Some(&batch.trajectory),
             EngineEvent::ExecuteOffer(execution) => Some(&execution.trajectory),
             EngineEvent::ChildReturn(report) => Some(&report.child),
+            EngineEvent::PeerMessage(report) => Some(&report.trajectory),
             EngineEvent::Outcome(_) | EngineEvent::BindFork(_) => None,
         };
         if acting.is_some_and(|trajectory| !view.projection().is_opened(trajectory)) {
@@ -249,6 +251,7 @@ impl Engine {
             EngineEvent::ChildReturn(report) => self.decide_child_return(view, &report, &act),
             EngineEvent::BindFork(binding) => self.decide_binding(view, &binding),
             EngineEvent::ExecuteOffer(execution) => self.decide_offer(view, &execution, &act),
+            EngineEvent::PeerMessage(report) => self.decide_peer_message(view, &report),
         }?;
         act.settle(self.registry.audience())?;
         Ok(decision)
@@ -276,7 +279,9 @@ impl Engine {
                 }
             }
             EngineEvent::ChildReturn(report) => (report.audience.clone(), AudienceEvidence::default()),
-            EngineEvent::BindFork(_) => (AudienceEvidence::default(), AudienceEvidence::default()),
+            EngineEvent::BindFork(_) | EngineEvent::PeerMessage(_) => {
+                (AudienceEvidence::default(), AudienceEvidence::default())
+            }
         };
         self.act_evidence(merged, inherited, projection.principal().cloned())
     }
@@ -601,6 +606,42 @@ impl Engine {
         Ok(EngineDecision {
             append: Some(self.decided(view, crate::basis::DecidedAct::Binding(member), batch)?),
             follow_up: FollowUp::Fork { child: child.clone() },
+        })
+    }
+
+    /// One peer message, admitted into the receiving trajectory at its origin's label: the
+    /// label the sender family recorded, or [`Label::unattributed`]. The trajectory's label
+    /// folds it like any other admitted value. The admitted body is the message's digest; the
+    /// message text stays with the runtime.
+    fn decide_peer_message(&self, view: &EngineView, report: &PeerReport) -> Result<EngineDecision, TransitionError> {
+        let projection = view.projection();
+        let views = projection.view(&report.trajectory);
+        if views.has_ended(&report.trajectory) {
+            return Err(TransitionError::BranchEnded);
+        }
+        if views.peer_message_admitted(&report.id) {
+            return Err(TransitionError::PeerMessageRepeated);
+        }
+        if report
+            .origin
+            .sender()
+            .is_some_and(|sender| projection.is_opened(sender.trajectory()))
+        {
+            return Err(TransitionError::SameFamilyPeer);
+        }
+        let label = report.origin.label();
+        let admitted = Fact::ValueAdmitted {
+            trajectory: report.trajectory.clone(),
+            value: LabeledValue::new(ValueBody::new(report.digest.to_hex()), label.clone()),
+            provenance: Provenance::PeerMessage {
+                id: report.id.clone(),
+                sender: report.origin.sender().cloned(),
+            },
+        };
+        let act = crate::basis::DecidedAct::PeerMessage(report.id.clone());
+        Ok(EngineDecision {
+            append: Some(self.decided(view, act, vec![admitted])?),
+            follow_up: FollowUp::PeerAdmitted { label },
         })
     }
 
@@ -15333,6 +15374,306 @@ mod tests {
         assert_eq!(reported.unwrap_err(), TransitionError::FailureBodyOutsideFile);
     }
 
+    mod peer_message {
+        use super::*;
+        use crate::transition::{PeerOrigin, PeerReport};
+        use crate::value::{PeerMessageId, RawResultDigest};
+
+        fn peer_id(id: &str) -> PeerMessageId {
+            PeerMessageId::new(id).expect("a test id is not empty")
+        }
+
+        fn sender_on(trajectory: &str) -> DispatchId {
+            DispatchId::new(TrajectoryId::new(trajectory), call("send", json!({})).digest(), 0)
+        }
+
+        fn attributed(label: Label) -> PeerOrigin {
+            PeerOrigin::Attributed {
+                sender: sender_on("peer-root"),
+                label,
+            }
+        }
+
+        fn peer(on: &TrajectoryId, id: &str, origin: PeerOrigin) -> EngineEvent {
+            EngineEvent::PeerMessage(PeerReport {
+                trajectory: on.clone(),
+                id: peer_id(id),
+                digest: RawResultDigest::of(format!("message {id}").as_bytes()),
+                origin,
+            })
+        }
+
+        fn admitted(e: &Engine, log: &[Fact], on: &TrajectoryId, id: &str, origin: PeerOrigin) -> Vec<Fact> {
+            appended_facts(
+                e.handle(&viewing(e, log), peer(on, id, origin))
+                    .expect("the peer message is admitted"),
+            )
+        }
+
+        fn label_of(e: &Engine, log: &[Fact], on: &TrajectoryId) -> Label {
+            viewing(e, log)
+                .views(on)
+                .expect("the trajectory is opened")
+                .current_label()
+        }
+
+        /// Rewrite the log's one peer admission.
+        fn rewritten(
+            log: &[Fact],
+            rewrite: impl Fn(&LabeledValue, &Provenance) -> (LabeledValue, Provenance),
+        ) -> Vec<Fact> {
+            log.iter()
+                .map(|fact| match fact {
+                    Fact::ValueAdmitted {
+                        trajectory,
+                        value,
+                        provenance: provenance @ Provenance::PeerMessage { .. },
+                    } => {
+                        let (value, provenance) = rewrite(value, provenance);
+                        Fact::ValueAdmitted {
+                            trajectory: trajectory.clone(),
+                            value,
+                            provenance,
+                        }
+                    }
+                    other => other.clone(),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn an_attributed_peer_message_folds_the_senders_label_into_the_receiver() {
+            let e = engine_at(vec![], known(TRUSTED, Audience::public()));
+            let log = vec![opened(&e)];
+            let before = label_of(&e, &log, &traj());
+            let sent = known(SUSPICIOUS, Audience::restricted([ReaderId::new("insider")]));
+            let decision = e
+                .handle(&viewing(&e, &log), peer(&traj(), "m1", attributed(sent.clone())))
+                .expect("the peer message is admitted");
+            assert_eq!(decision.follow_up, FollowUp::PeerAdmitted { label: sent.clone() });
+            let facts = appended_facts(decision);
+            assert!(matches!(
+                &facts[..],
+                [
+                    Fact::BasisAdvanced {
+                        act: crate::basis::DecidedAct::PeerMessage(_),
+                        ..
+                    },
+                    Fact::ValueAdmitted {
+                        value,
+                        provenance: Provenance::PeerMessage { sender: Some(sender), .. },
+                        ..
+                    },
+                ] if value.label == sent
+                    && value.body.as_str() == RawResultDigest::of(b"message m1").to_hex()
+                    && sender == &sender_on("peer-root")
+            ));
+            let log = [log, facts].concat();
+            assert_eq!(e.validate_replay(&log), Ok(()));
+            assert_eq!(label_of(&e, &log, &traj()), before.combine(&sent));
+            assert_ne!(label_of(&e, &log, &traj()), before);
+        }
+
+        #[test]
+        fn an_unattributed_peer_message_is_admitted_at_the_unattributed_label() {
+            let e = engine_at(vec![], known(TRUSTED, Audience::public()));
+            let log = vec![opened(&e)];
+            let log = [log.clone(), admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed)].concat();
+            assert_eq!(e.validate_replay(&log), Ok(()));
+            assert_eq!(label_of(&e, &log, &traj()), Label::new(SUSPICIOUS, Audience::public()));
+            assert_eq!(Label::unattributed(), Label::new(Trust::new(0), Audience::public()));
+            assert_ne!(Label::unattributed(), Label::bottom());
+        }
+
+        #[test]
+        fn a_rewritten_peer_admission_is_refused_at_replay() {
+            let e = engine_at(vec![], known(TRUSTED, Audience::public()));
+            let log = vec![opened(&e)];
+            let sent = known(TRUSTED, Audience::restricted([ReaderId::new("insider")]));
+            let unattributed = [log.clone(), admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed)].concat();
+            let attributed = [log.clone(), admitted(&e, &log, &traj(), "m1", attributed(sent.clone()))].concat();
+
+            let raised = rewritten(&unattributed, |value, provenance| {
+                (
+                    LabeledValue::new(value.body.clone(), known(TRUSTED, Audience::public())),
+                    provenance.clone(),
+                )
+            });
+            assert_eq!(e.validate_replay(&raised), Err(TransitionRefusal::ForgedLabel));
+
+            let stripped = rewritten(&attributed, |value, _| {
+                (
+                    value.clone(),
+                    Provenance::PeerMessage {
+                        id: peer_id("m1"),
+                        sender: None,
+                    },
+                )
+            });
+            assert_eq!(e.validate_replay(&stripped), Err(TransitionRefusal::ForgedLabel));
+
+            let persisted = rewritten(&attributed, |value, provenance| {
+                (
+                    LabeledValue::new(ValueBody::new("the message text"), value.label.clone()),
+                    provenance.clone(),
+                )
+            });
+            assert_eq!(e.validate_replay(&persisted), Err(TransitionRefusal::PersistedPeerBody));
+
+            let undeclared: Vec<Fact> = attributed
+                .iter()
+                .filter(|fact| !matches!(fact, Fact::BasisAdvanced { .. }))
+                .cloned()
+                .collect();
+            assert_eq!(
+                e.validate_replay(&undeclared),
+                Err(TransitionRefusal::UndeclaredAdmission)
+            );
+        }
+
+        #[test]
+        fn a_repeated_peer_message_id_is_refused_live_and_at_replay() {
+            let e = engine_at(vec![], known(TRUSTED, Audience::public()));
+            let log = vec![opened(&e)];
+            let facts = admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed);
+            let log = [log, facts.clone()].concat();
+            assert_eq!(
+                e.handle(&viewing(&e, &log), peer(&traj(), "m1", PeerOrigin::Unattributed))
+                    .unwrap_err(),
+                TransitionError::PeerMessageRepeated
+            );
+            assert_eq!(
+                e.validate_replay(&[log.clone(), facts].concat()),
+                Err(TransitionRefusal::RepeatAdmission)
+            );
+            assert!(
+                e.handle(&viewing(&e, &log), peer(&traj(), "m2", PeerOrigin::Unattributed))
+                    .is_ok(),
+                "another id is another message"
+            );
+        }
+
+        #[test]
+        fn a_peer_message_is_admitted_once_per_trajectory_and_never_into_an_ended_branch() {
+            let e = engine(vec![]);
+            let child = TrajectoryId::new("child");
+            let log = spawn_family(&e, &child);
+            let on_root = admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed);
+            let log = [log, on_root].concat();
+            let on_child = admitted(&e, &log, &child, "m1", PeerOrigin::Unattributed);
+            assert_eq!(e.validate_replay(&[log.clone(), on_child.clone()].concat()), Ok(()));
+
+            let ended = e
+                .handle(&viewing(&e, &log), child_report(&log, &child, ChildSubmission::Void))
+                .expect("a void return ends the child");
+            let log = [log, appended_facts(ended)].concat();
+            assert_eq!(
+                e.handle(&viewing(&e, &log), peer(&child, "m2", PeerOrigin::Unattributed))
+                    .unwrap_err(),
+                TransitionError::BranchEnded
+            );
+            assert_eq!(
+                e.validate_replay(&[log, on_child].concat()),
+                Err(TransitionRefusal::BranchEnded)
+            );
+        }
+
+        #[test]
+        fn a_peer_message_to_an_unopened_trajectory_is_refused() {
+            let e = engine(vec![]);
+            let log = vec![opened(&e)];
+            let stranger = TrajectoryId::new("stranger");
+            assert_eq!(
+                e.handle(&viewing(&e, &log), peer(&stranger, "m1", PeerOrigin::Unattributed))
+                    .unwrap_err(),
+                TransitionError::UnopenedTrajectory
+            );
+            let facts = admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed);
+            let misdirected: Vec<Fact> = facts
+                .into_iter()
+                .map(|fact| match fact {
+                    Fact::ValueAdmitted { value, provenance, .. } => Fact::ValueAdmitted {
+                        trajectory: stranger.clone(),
+                        value,
+                        provenance,
+                    },
+                    other => other,
+                })
+                .collect();
+            assert_eq!(
+                e.validate_replay(&[log, misdirected].concat()),
+                Err(TransitionRefusal::ForeignTrajectory)
+            );
+        }
+
+        #[test]
+        fn a_peer_message_from_the_receiving_family_is_refused() {
+            let e = engine(vec![]);
+            let log = vec![opened(&e)];
+            let own = PeerOrigin::Attributed {
+                sender: sender_on(traj().as_str()),
+                label: known(TRUSTED, Audience::public()),
+            };
+            assert_eq!(
+                e.handle(&viewing(&e, &log), peer(&traj(), "m1", own)).unwrap_err(),
+                TransitionError::SameFamilyPeer
+            );
+            let foreign = [
+                log.clone(),
+                admitted(
+                    &e,
+                    &log,
+                    &traj(),
+                    "m1",
+                    attributed(known(SUSPICIOUS, Audience::public())),
+                ),
+            ]
+            .concat();
+            let own = rewritten(&foreign, |value, _| {
+                (
+                    value.clone(),
+                    Provenance::PeerMessage {
+                        id: peer_id("m1"),
+                        sender: Some(sender_on(traj().as_str())),
+                    },
+                )
+            });
+            assert_eq!(e.validate_replay(&own), Err(TransitionRefusal::SameFamilyPeer));
+        }
+
+        /// The flow moves exactly when the label does: a peer message that lowers the label
+        /// stales the offers opened before it, and one that leaves it where it was does not.
+        #[test]
+        fn offers_opened_before_a_label_moving_peer_message_are_stale_after_it() {
+            let e = engine(vec![crm_tool(), restrictable_tool("note")]);
+            let log = vec![opened(&e)];
+            let opened = appended_facts(blocked_batch(&e, &log, "b1", nonce()));
+            let offer = opened_offers(&opened)[0].0;
+            let log = [log, opened].concat();
+
+            let current = label_of(&e, &log, &traj());
+            let unmoved = [log.clone(), admitted(&e, &log, &traj(), "m1", attributed(current))].concat();
+            assert!(
+                execute_offer(&e, &unmoved, offer, OfferOutcome::Approved(Vec::new())).is_ok(),
+                "a message at the current label moves nothing an offer was derived from"
+            );
+
+            let lowered = [log.clone(), admitted(&e, &log, &traj(), "m1", PeerOrigin::Unattributed)].concat();
+            assert_eq!(e.validate_replay(&lowered), Ok(()));
+            assert_eq!(
+                execute_offer(&e, &lowered, offer, OfferOutcome::Approved(Vec::new())),
+                Err(TransitionError::StaleOffer)
+            );
+        }
+
+        #[test]
+        fn a_peer_message_id_is_never_empty() {
+            assert_eq!(PeerMessageId::new(""), Err(crate::value::EmptyPeerMessageId));
+            assert_eq!(serde_json::to_value(peer_id("m1")).unwrap(), json!("m1"));
+            assert!(serde_json::from_value::<PeerMessageId>(json!("")).is_err());
+        }
+    }
+
     /// A held view advanced by the batches the engine sealed stays the view a cold replay of the
     /// same log builds, at every prefix: the runtime may keep one view per root and advance it
     /// with its own appends instead of replaying the whole log each turn.
@@ -15390,6 +15731,10 @@ mod tests {
                 pick: usize,
                 value: bool,
             },
+            Peer {
+                on: usize,
+                attributed: bool,
+            },
             HostOnly,
         }
 
@@ -15407,6 +15752,7 @@ mod tests {
                 3 => (index(), any::<bool>()).prop_map(|(pick, approve)| Step::Offer { pick, approve }),
                 2 => index().prop_map(|pick| Step::Bind { pick }),
                 2 => (index(), any::<bool>()).prop_map(|(pick, value)| Step::Return { pick, value }),
+                2 => (index(), any::<bool>()).prop_map(|(on, attributed)| Step::Peer { on, attributed }),
                 1 => Just(Step::HostOnly),
             ]
         }
@@ -15638,6 +15984,23 @@ mod tests {
                             audience: crate::audience::AudienceEvidence::default(),
                         }))
                     }
+                    Step::Peer { on, attributed } => {
+                        let on = self.trajectories[on % self.trajectories.len()].clone();
+                        let id = self.next_id();
+                        let origin = match attributed {
+                            true => crate::transition::PeerOrigin::Attributed {
+                                sender: DispatchId::new(TrajectoryId::new("peer"), call("send", json!({})).digest(), 0),
+                                label: Label::new(TRUSTED, Audience::public()),
+                            },
+                            false => crate::transition::PeerOrigin::Unattributed,
+                        };
+                        Some(EngineEvent::PeerMessage(crate::transition::PeerReport {
+                            trajectory: on,
+                            id: crate::value::PeerMessageId::new(id.clone()).expect("a law id is not empty"),
+                            digest: crate::value::RawResultDigest::of(id.as_bytes()),
+                            origin,
+                        }))
+                    }
                     Step::HostOnly => None,
                 }
             }
@@ -15754,6 +16117,14 @@ mod tests {
                     pick: 0,
                     approve: false,
                 },
+                Step::Peer {
+                    on: 0,
+                    attributed: true,
+                },
+                Step::Peer {
+                    on: 1,
+                    attributed: false,
+                },
             ];
             let mut walk = Walk::open();
             for step in &script {
@@ -15773,6 +16144,21 @@ mod tests {
                 }
             )));
             assert!(reached(|fact| matches!(fact, Fact::OfferDenied { .. })));
+            assert!(reached(|fact| matches!(
+                fact,
+                Fact::ValueAdmitted {
+                    provenance: Provenance::PeerMessage { sender: Some(_), .. },
+                    ..
+                }
+            )));
+            assert!(reached(|fact| matches!(
+                fact,
+                Fact::ValueAdmitted {
+                    trajectory,
+                    provenance: Provenance::PeerMessage { sender: None, .. },
+                    ..
+                } if trajectory != &traj()
+            )));
         }
     }
 }

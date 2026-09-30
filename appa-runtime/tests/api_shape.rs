@@ -9,8 +9,8 @@ use appa_runtime::api::{
 use appa_runtime::config::Config;
 use appa_runtime::hooks;
 use appa_runtime_api::{
-    Actor, Adapter, Codec, HookDecision, HookEvent, OutcomeBody, ParseRefusal, PromptKey, ProposedCall, SpawnBinding,
-    SpawnKind, SpawnRef, ToolOutcome, TrajectoryId,
+    Actor, Adapter, Codec, HookDecision, HookEvent, OutcomeBody, ParseRefusal, PeerAddress, PeerFrame, PromptKey,
+    ProposedCall, SessionTitle, SpawnBinding, SpawnKind, SpawnRef, ToolOutcome, TrajectoryId,
 };
 
 fn the_reexported_vocabulary(
@@ -53,15 +53,24 @@ async fn the_declared_dispatcher(runtime: &Runtime, adapter: &Adapter, event: Ho
 
 fn the_declared_vocabulary(event: HookEvent, decision: HookDecision, refusal: ParseRefusal, outcome: ToolOutcome) {
     match event {
-        HookEvent::SessionStart { root, .. } => {
+        HookEvent::SessionStart { root, address, .. } => {
             let _: TrajectoryId = root;
+            let _: Option<PeerAddress> = address;
         }
-        HookEvent::Prompt { actor, text, settles } => {
+        HookEvent::Prompt {
+            actor,
+            text,
+            settles,
+            peer,
+            title,
+        } => {
             let Actor { root, child } = actor;
             let _: TrajectoryId = root;
             let _: Option<TrajectoryId> = child;
             let _: String = text;
             let _: Option<String> = settles;
+            let _: Option<PeerFrame> = peer;
+            let _: Option<SessionTitle> = title;
         }
         HookEvent::TurnEnd { actor } => {
             let Actor { root, child } = actor;
