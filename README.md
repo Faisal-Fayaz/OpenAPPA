@@ -69,6 +69,16 @@ curl -fsSL https://openappa.com/install.sh | sh &&
   ~/.local/bin/appa plugin install claude-code
 ```
 
+Then start a protected session and run the policy setup skill:
+
+```sh
+clappa
+```
+
+```text
+/appa-guide
+```
+
 The installer verifies the checksum of the release binary for Linux or macOS
 and places it in `~/.local/bin`. Windows users unpack the zip from the
 [releases page](https://github.com/archestra-ai/OpenAPPA/releases). From a
