@@ -10,20 +10,20 @@
 use appa_engine::fact::{Fact, TrajectoryOpening};
 use appa_engine::transition::PeerOrigin;
 use appa_engine::value::{DispatchId, PeerMessageId, RawResultDigest};
-use appa_eventlog::{HostObservation, Log, PeerLedger};
+use appa_eventlog::{HostObservation, Log, PEER_ADDRESS_KEY, PeerLedger, PendingPeer};
 use appa_runtime_api::{PeerAddress, PeerDigest, PeerFrame, ProposedCall, SessionTitle, TrajectoryId};
 
 use super::{EventError, Runtime};
-use crate::engine::EngineRefusal;
+use crate::engine::{EngineRefusal, EngineView};
 
 /// The host tool one session messages another with.
 pub(crate) const SEND_MESSAGE: &str = "host/claude-code/SendMessage";
 
-/// The key prefix an `Addressed` record is found under.
-const ADDRESS_KEY: &str = "peer-address:";
-
 /// How many protected sessions a refused send lists.
 const LISTED_PEERS: usize = 20;
+
+/// How many candidate logs a refused send reads to list them.
+const LISTING_READS: usize = 64;
 
 /// Where a `SendMessage` call may go.
 pub(crate) enum PeerSend {
@@ -44,7 +44,7 @@ pub(crate) struct PeerMatch {
 }
 
 fn address_key(address: &PeerAddress) -> String {
-    format!("{ADDRESS_KEY}{address}")
+    format!("{PEER_ADDRESS_KEY}{address}")
 }
 
 fn opening(log: &Log) -> Option<&TrajectoryOpening> {
@@ -85,27 +85,32 @@ impl Runtime {
     /// This family receives peer messages at `address`. Recorded only when it is not already
     /// the family's address, so a resumed session leaves one record.
     pub(crate) fn record_address(&self, root: &TrajectoryId, address: &PeerAddress) -> Result<(), EventError> {
-        self.inner.append_host_with(root, |log| {
-            let ledger = PeerLedger::fold(log.host_records());
-            let observation = (ledger.address != Some(address)).then(|| HostObservation::Addressed {
-                address: address.clone(),
-                title: ledger.title.cloned(),
-            });
-            Ok((observation, ()))
-        })
+        self.record_addressed(root, Some(address), None)
     }
 
     /// The title the host shows for an addressed family, for a refused send to list it by.
     pub(crate) fn record_title(&self, root: &TrajectoryId, title: &SessionTitle) -> Result<(), EventError> {
+        self.record_addressed(root, None, Some(title))
+    }
+
+    /// Record the family's address and title, each defaulting to the one it has, when either
+    /// changed. A family with no address records nothing.
+    fn record_addressed(
+        &self,
+        root: &TrajectoryId,
+        address: Option<&PeerAddress>,
+        title: Option<&SessionTitle>,
+    ) -> Result<(), EventError> {
         self.inner.append_host_with(root, |log| {
             let ledger = PeerLedger::fold(log.host_records());
-            let observation = match ledger.address {
-                Some(address) if ledger.title != Some(title) => Some(HostObservation::Addressed {
+            let title = title.or(ledger.title);
+            let observation = address
+                .or(ledger.address)
+                .filter(|address| ledger.address != Some(*address) || ledger.title != title)
+                .map(|address| HostObservation::Addressed {
                     address: address.clone(),
-                    title: Some(title.clone()),
-                }),
-                _ => None,
-            };
+                    title: title.cloned(),
+                });
             Ok((observation, ()))
         })
     }
@@ -170,13 +175,17 @@ impl Runtime {
     /// The refusal of a send that reaches no protected session, with up to `LISTED_PEERS`
     /// sessions it can reach.
     fn peer_listing(&self, sender: &TrajectoryId, sent: &Log) -> Result<String, EventError> {
-        let roots = self.inner.store.roots_mentioning_prefix(ADDRESS_KEY).map_err(|error| {
-            self.inner
-                .note_store_error(None, crate::events::StoreOperation::Read, &error);
-            EventError::Storage(error.to_string())
-        })?;
+        let roots = self
+            .inner
+            .store
+            .roots_mentioning_prefix(PEER_ADDRESS_KEY)
+            .map_err(|error| {
+                self.inner
+                    .note_store_error(None, crate::events::StoreOperation::Read, &error);
+                EventError::Storage(error.to_string())
+            })?;
         let mut peers = Vec::new();
-        for root in roots.iter().filter(|root| *root != sender) {
+        for root in roots.iter().filter(|root| *root != sender).take(LISTING_READS) {
             if peers.len() == LISTED_PEERS {
                 break;
             }
@@ -243,10 +252,26 @@ impl Runtime {
                 return Ok(unattributed(digest));
             }
         };
-        let candidates: Vec<String> = PeerLedger::fold(sent.host_records())
+        let ledger = PeerLedger::fold(sent.host_records());
+        let addressed: Vec<&PendingPeer<'_>> = ledger
             .pending
             .iter()
             .filter(|pending| pending.recipient == receiver && pending.digest == digest)
+            .collect();
+        if addressed.is_empty() {
+            tracing::debug!(receiver = %receiver.0, sender = %sender.0, "no pending send matches the peer frame");
+            return Ok(unattributed(digest));
+        }
+        let view = self.sender_view(&sent)?;
+        // A send whose dispatch closed without success delivered nothing; a still-open one
+        // may be delivered before the sender's tool result lands.
+        let candidates: Vec<String> = addressed
+            .iter()
+            .filter(|pending| {
+                !view
+                    .views(pending.dispatch.trajectory())
+                    .is_some_and(|views| views.closed_unsuccessfully(pending.dispatch))
+            })
             .map(|pending| pending.id.to_string())
             .collect();
         let taken = match candidates.is_empty() {
@@ -257,7 +282,7 @@ impl Runtime {
             tracing::debug!(receiver = %receiver.0, sender = %sender.0, "no pending send matches the peer frame");
             return Ok(unattributed(digest));
         };
-        let label = self.dispatched_label(&sent, &dispatch)?;
+        let label = dispatched_label(&view, &dispatch)?;
         tracing::debug!(receiver = %receiver.0, sender = %sender.0, "the peer frame is attributed to its send");
         Ok(PeerMatch {
             id: PeerMessageId::new(id).map_err(|error| EventError::UntrustedLog(error.to_string()))?,
@@ -297,18 +322,22 @@ impl Runtime {
         })
     }
 
-    /// The label the sender's trajectory stood at when it dispatched the send.
-    fn dispatched_label(&self, sent: &Log, dispatch: &DispatchId) -> Result<appa_engine::label::Label, EventError> {
+    /// The sender family's engine view, rebuilt from its log.
+    fn sender_view(&self, sent: &Log) -> Result<EngineView, EventError> {
         let deployment = self.inner.deployment();
         let policy = self.inner.resolve_policy(&deployment, sent)?;
-        let view = policy.engine().rebuild_view(sent).map_err(EventError::from)?;
-        view.views(dispatch.trajectory())
-            .and_then(|views| views.receiving_bound(dispatch).cloned())
-            .ok_or_else(|| {
-                EngineRefusal::Invariant {
-                    detail: "a pending peer message names a dispatch its sender's log never opened".to_string(),
-                }
-                .into()
-            })
+        policy.engine().rebuild_view(sent).map_err(EventError::from)
     }
+}
+
+/// The label the sender's trajectory stood at when it dispatched the send.
+fn dispatched_label(view: &EngineView, dispatch: &DispatchId) -> Result<appa_engine::label::Label, EventError> {
+    view.views(dispatch.trajectory())
+        .and_then(|views| views.receiving_bound(dispatch).cloned())
+        .ok_or_else(|| {
+            EngineRefusal::Invariant {
+                detail: "a pending peer message names a dispatch its sender's log never opened".to_string(),
+            }
+            .into()
+        })
 }

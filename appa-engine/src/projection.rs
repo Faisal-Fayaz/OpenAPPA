@@ -1200,6 +1200,11 @@ impl Views<'_> {
         matches!(self.projection.closed.get(dispatch), Some(CloseKind::Success))
     }
 
+    /// Did this dispatch close without success: failed, or indeterminate?
+    pub fn closed_unsuccessfully(&self, dispatch: &DispatchId) -> bool {
+        matches!(self.projection.closed.get(dispatch), Some(kind) if *kind != CloseKind::Success)
+    }
+
     pub(crate) fn dispatch_failed(&self, dispatch: &DispatchId) -> bool {
         matches!(
             self.projection.closed.get(dispatch),

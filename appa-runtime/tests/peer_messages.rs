@@ -191,6 +191,24 @@ async fn sent(runtime: &Runtime, session: &str, to: &str, message: &str, id: &st
     .await;
 }
 
+/// A send released, then reported by the host as failed.
+async fn failed_send(runtime: &Runtime, session: &str, to: &str, message: &str, id: &str) {
+    let (decision, reason) = send(runtime, session, to, message, id).await;
+    assert_eq!(decision, "allow", "{reason}");
+    let (status, answer) = claude_hook(
+        runtime,
+        &json!({
+            "hook_event_name": "PostToolUseFailure",
+            "session_id": session,
+            "tool_name": "SendMessage",
+            "tool_input": { "to": to, "message": message },
+            "tool_use_id": id,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+}
+
 fn label(runtime: &Runtime, session: &str) -> (String, String) {
     let status = runtime.status(&root(session)).expect("the session has a status");
     (status.trust, status.audience)
@@ -401,6 +419,28 @@ async fn each_delivery_takes_one_send() {
     sent(&runtime, "a", B_ADDRESS, "same", "a3").await;
 
     deliver(&runtime, "b", A_ADDRESS, "same").await;
+    deliver(&runtime, "b", A_ADDRESS, "same").await;
+    assert_eq!(label(&runtime, "b"), trusted("internal"));
+    deliver(&runtime, "b", A_ADDRESS, "same").await;
+    assert_eq!(label(&runtime, "b"), ("suspicious".to_string(), "internal".to_string()));
+}
+
+#[tokio::test]
+async fn a_send_whose_dispatch_failed_attributes_no_frame() {
+    let dir = tempfile::tempdir().expect("a temp dir is creatable");
+    let runtime = pair(dir.path()).await;
+    narrowed(&runtime, "a", "a1").await;
+    failed_send(&runtime, "a", B_ADDRESS, "same", "a2").await;
+
+    deliver(&runtime, "b", A_ADDRESS, "same").await;
+    assert_eq!(label(&runtime, "b"), unattributed());
+
+    let fresh = tempfile::tempdir().expect("a temp dir is creatable");
+    let runtime = pair(fresh.path()).await;
+    narrowed(&runtime, "a", "a1").await;
+    failed_send(&runtime, "a", B_ADDRESS, "same", "a2").await;
+    sent(&runtime, "a", B_ADDRESS, "same", "a3").await;
+
     deliver(&runtime, "b", A_ADDRESS, "same").await;
     assert_eq!(label(&runtime, "b"), trusted("internal"));
     deliver(&runtime, "b", A_ADDRESS, "same").await;

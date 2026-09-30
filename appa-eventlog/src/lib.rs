@@ -206,6 +206,9 @@ pub enum HostObservation {
     PeerTaken { id: String },
 }
 
+/// The key prefix an [`HostObservation::Addressed`] record is found under.
+pub const PEER_ADDRESS_KEY: &str = "peer-address:";
+
 impl HostObservation {
     /// The key this observation names, where it names one: a standing taken, held, or spent.
     /// The store writes it beside the record so [`LogStore::roots_mentioning`] can find the
@@ -215,7 +218,7 @@ impl HostObservation {
             Self::Vouched { key, .. } | Self::Claimed { key, .. } | Self::Released { key, .. } => {
                 Some(Cow::Borrowed(key))
             }
-            Self::Addressed { address, .. } => Some(Cow::Owned(format!("peer-address:{address}"))),
+            Self::Addressed { address, .. } => Some(Cow::Owned(format!("{PEER_ADDRESS_KEY}{address}"))),
             Self::PeerSent { recipient, .. } => Some(Cow::Owned(format!("peer:{}", recipient.as_str()))),
             Self::Inventory { .. }
             | Self::CallBound { .. }
