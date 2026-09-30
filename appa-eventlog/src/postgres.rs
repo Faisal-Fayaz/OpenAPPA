@@ -620,12 +620,15 @@ impl PostgresStore {
 
     /// See [`LogStore::roots_mentioning_prefix`].
     pub(super) fn roots_mentioning_prefix(&self, prefix: &str) -> Result<Vec<TrajectoryId>, ReadError> {
-        let prefix = prefix.to_owned();
+        let (prefix, upper) = (prefix.to_owned(), crate::prefix_upper(prefix));
         let roots = self.query(move |client| {
+            // Byte order, as the bound is computed in: a linguistic collation may sort a
+            // prefixed key outside the range.
             Ok(client
                 .query(
-                    "SELECT DISTINCT root FROM openappa_host_keys WHERE left(key, char_length($1::text)) = $1::text ORDER BY root",
-                    &[&prefix],
+                    "SELECT DISTINCT root FROM openappa_host_keys \
+                     WHERE key COLLATE \"C\" >= $1 AND key COLLATE \"C\" < $2 ORDER BY root",
+                    &[&prefix, &upper],
                 )?
                 .into_iter()
                 .map(|row| row.get::<_, String>(0))

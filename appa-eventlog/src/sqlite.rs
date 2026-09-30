@@ -211,10 +211,12 @@ impl Sqlite {
 
     pub(crate) fn roots_mentioning_prefix(&self, prefix: &str) -> Result<Vec<TrajectoryId>, ReadError> {
         let connection = self.connection();
-        let mut statement = connection
-            .prepare("SELECT DISTINCT root FROM host_keys WHERE substr(key, 1, length(?1)) = ?1 ORDER BY root ASC")?;
+        let mut statement =
+            connection.prepare("SELECT DISTINCT root FROM host_keys WHERE key >= ?1 AND key < ?2 ORDER BY root ASC")?;
         let roots = statement
-            .query_map(params![prefix], |row| row.get::<_, String>(0))?
+            .query_map(params![prefix, crate::prefix_upper(prefix)], |row| {
+                row.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(roots.into_iter().map(TrajectoryId::new).collect())
     }

@@ -54,6 +54,17 @@ fn opening(log: &Log) -> Option<&TrajectoryOpening> {
     }
 }
 
+/// Two families opened under one policy for one principal: a label one records means the
+/// same to the other. Both are fixed at a family's opening.
+fn pinned_alike(sent: &Log, received: &Log) -> bool {
+    match (opening(sent), opening(received)) {
+        (Some(sent), Some(received)) => {
+            sent.policy_digest == received.policy_digest && sent.principal == received.principal
+        }
+        _ => false,
+    }
+}
+
 fn fresh_id() -> PeerMessageId {
     PeerMessageId::new(uuid::Uuid::new_v4().to_string()).expect("a uuid is never empty")
 }
@@ -99,10 +110,10 @@ impl Runtime {
         })
     }
 
-    /// The one family whose latest address is `address`. A family that moved to another
-    /// address no longer answers for this one, and two families claiming it answer for
-    /// nobody.
-    fn addressed_root(&self, address: &PeerAddress) -> Result<Option<TrajectoryId>, EventError> {
+    /// The one family whose latest address is `address`, with its log. A family that moved
+    /// to another address no longer answers for this one, and two families claiming it
+    /// answer for nobody.
+    fn addressed_root(&self, address: &PeerAddress) -> Result<Option<(TrajectoryId, Log)>, EventError> {
         let candidates = self
             .inner
             .store
@@ -116,27 +127,31 @@ impl Runtime {
         for root in candidates {
             let log = self.inner.log(&root)?;
             if PeerLedger::fold(log.host_records()).address == Some(address) {
-                current.push(root);
+                current.push((root, log));
             }
         }
-        Ok(match <[TrajectoryId; 1]>::try_from(current) {
-            Ok([root]) => Some(root),
+        Ok(match <[(TrajectoryId, Log); 1]>::try_from(current) {
+            Ok([addressed]) => Some(addressed),
             Err(_) => None,
         })
     }
 
     /// Where this family's `SendMessage` call goes: another live protected family named by
-    /// its address, or nowhere.
+    /// its address and pinned alike, or nowhere.
     pub(crate) fn peer_send(&self, sender: &TrajectoryId, call: &ProposedCall) -> Result<PeerSend, EventError> {
         let arguments = serde_json::from_str::<serde_json::Value>(call.arguments.get()).unwrap_or_default();
         let to = arguments.get("to").and_then(serde_json::Value::as_str);
         let message = arguments.get("message").and_then(serde_json::Value::as_str);
+        let sent = self.inner.log(sender)?;
         let recipient = match to.map(PeerAddress::parse) {
-            Some(Ok(address)) => self.addressed_root(&address)?,
+            Some(Ok(address)) => self
+                .addressed_root(&address)?
+                .filter(|(recipient, log)| recipient != sender && pinned_alike(&sent, log))
+                .map(|(recipient, _)| recipient),
             _ => None,
         };
         match (recipient, message) {
-            (Some(recipient), Some(message)) if recipient != *sender => {
+            (Some(recipient), Some(message)) => {
                 tracing::debug!(sender = %sender.0, recipient = %recipient.0, "a peer message resolved its recipient");
                 Ok(PeerSend::Resolved {
                     recipient,
@@ -144,17 +159,17 @@ impl Runtime {
                 })
             }
             _ => {
-                tracing::debug!(sender = %sender.0, "a peer message names no other protected session");
+                tracing::debug!(sender = %sender.0, "a peer message names no other protected session under this policy");
                 Ok(PeerSend::Refused {
-                    feedback: self.peer_listing(sender)?,
+                    feedback: self.peer_listing(sender, &sent)?,
                 })
             }
         }
     }
 
-    /// The refusal of a send that reaches no protected session, with the sessions it can
-    /// reach.
-    fn peer_listing(&self, sender: &TrajectoryId) -> Result<String, EventError> {
+    /// The refusal of a send that reaches no protected session, with up to `LISTED_PEERS`
+    /// sessions it can reach.
+    fn peer_listing(&self, sender: &TrajectoryId, sent: &Log) -> Result<String, EventError> {
         let roots = self.inner.store.roots_mentioning_prefix(ADDRESS_KEY).map_err(|error| {
             self.inner
                 .note_store_error(None, crate::events::StoreOperation::Read, &error);
@@ -162,23 +177,27 @@ impl Runtime {
         })?;
         let mut peers = Vec::new();
         for root in roots.iter().filter(|root| *root != sender) {
+            if peers.len() == LISTED_PEERS {
+                break;
+            }
             let log = self.inner.log(root)?;
+            if !pinned_alike(sent, &log) {
+                continue;
+            }
             let ledger = PeerLedger::fold(log.host_records());
             if let Some(address) = ledger.address {
-                let title = ledger.title.map_or("(untitled)", SessionTitle::as_str);
+                // A title is another session's self-label: quoted, it reads as data.
+                let title = ledger
+                    .title
+                    .map_or("(untitled)".to_string(), |title| format!("{:?}", title.as_str()));
                 peers.push(format!("  {title} → {address}"));
             }
         }
         let rule = "SendMessage reaches only another protected session, named by its address: set `to` to one \
                     address below.";
-        let listed = match peers.len() {
-            0 => "No other protected session has an address.".to_string(),
-            count if count > LISTED_PEERS => format!(
-                "{}\n  … and {} more",
-                peers[..LISTED_PEERS].join("\n"),
-                count - LISTED_PEERS
-            ),
-            _ => peers.join("\n"),
+        let listed = match peers.is_empty() {
+            true => "No other protected session has an address.".to_string(),
+            false => peers.join("\n"),
         };
         Ok(format!("{rule}\n{listed}"))
     }
@@ -216,18 +235,29 @@ impl Runtime {
                 return Ok(unattributed(&PeerDigest::of_body(text)));
             }
         };
-        let sender = match self.addressed_root(from)? {
-            Some(sender) if sender != *receiver && self.pinned_alike(&sender, receiver)? => sender,
+        let received = self.inner.log(receiver)?;
+        let (sender, sent) = match self.addressed_root(from)? {
+            Some((sender, sent)) if sender != *receiver && pinned_alike(&sent, &received) => (sender, sent),
             _ => {
                 tracing::debug!(receiver = %receiver.0, "no protected session under this policy sent the peer frame");
                 return Ok(unattributed(digest));
             }
         };
-        let Some((id, dispatch)) = self.take_peer(&sender, receiver, digest)? else {
+        let candidates: Vec<String> = PeerLedger::fold(sent.host_records())
+            .pending
+            .iter()
+            .filter(|pending| pending.recipient == receiver && pending.digest == digest)
+            .map(|pending| pending.id.to_string())
+            .collect();
+        let taken = match candidates.is_empty() {
+            true => None,
+            false => self.take_peer(&sender, &candidates)?,
+        };
+        let Some((id, dispatch)) = taken else {
             tracing::debug!(receiver = %receiver.0, sender = %sender.0, "no pending send matches the peer frame");
             return Ok(unattributed(digest));
         };
-        let label = self.dispatched_label(&sender, &dispatch)?;
+        let label = self.dispatched_label(&sent, &dispatch)?;
         tracing::debug!(receiver = %receiver.0, sender = %sender.0, "the peer frame is attributed to its send");
         Ok(PeerMatch {
             id: PeerMessageId::new(id).map_err(|error| EventError::UntrustedLog(error.to_string()))?,
@@ -239,25 +269,13 @@ impl Runtime {
         })
     }
 
-    /// Two families opened under one policy for one principal: a label one records means the
-    /// same to the other.
-    fn pinned_alike(&self, sender: &TrajectoryId, receiver: &TrajectoryId) -> Result<bool, EventError> {
-        let (sent, received) = (self.inner.log(sender)?, self.inner.log(receiver)?);
-        Ok(match (opening(&sent), opening(&received)) {
-            (Some(sent), Some(received)) => {
-                sent.policy_digest == received.policy_digest && sent.principal == received.principal
-            }
-            _ => false,
-        })
-    }
-
-    /// Take the oldest send from `sender` still pending for `receiver` with this digest. A
-    /// racer that took it first leaves the next one, re-derived where the take lands.
+    /// Take the oldest of `candidates` still pending in `sender`'s log. A racer that took it
+    /// first leaves the next one, re-derived where the take lands. Only sends the caller
+    /// already read are taken, so their dispatches stand in the log it read.
     fn take_peer(
         &self,
         sender: &TrajectoryId,
-        receiver: &TrajectoryId,
-        digest: &PeerDigest,
+        candidates: &[String],
     ) -> Result<Option<(String, DispatchId)>, EventError> {
         self.inner.append_host_with(sender, |log| {
             let ledger = PeerLedger::fold(log.host_records());
@@ -265,7 +283,7 @@ impl Runtime {
                 match ledger
                     .pending
                     .iter()
-                    .find(|pending| pending.recipient == receiver && pending.digest == digest)
+                    .find(|pending| candidates.iter().any(|id| id == pending.id))
                 {
                     Some(pending) => (
                         Some(HostObservation::PeerTaken {
@@ -280,15 +298,10 @@ impl Runtime {
     }
 
     /// The label the sender's trajectory stood at when it dispatched the send.
-    fn dispatched_label(
-        &self,
-        sender: &TrajectoryId,
-        dispatch: &DispatchId,
-    ) -> Result<appa_engine::label::Label, EventError> {
-        let log = self.inner.log(sender)?;
+    fn dispatched_label(&self, sent: &Log, dispatch: &DispatchId) -> Result<appa_engine::label::Label, EventError> {
         let deployment = self.inner.deployment();
-        let policy = self.inner.resolve_policy(&deployment, &log)?;
-        let view = policy.engine().rebuild_view(&log).map_err(EventError::from)?;
+        let policy = self.inner.resolve_policy(&deployment, sent)?;
+        let view = policy.engine().rebuild_view(sent).map_err(EventError::from)?;
         view.views(dispatch.trajectory())
             .and_then(|views| views.receiving_bound(dispatch).cloned())
             .ok_or_else(|| {

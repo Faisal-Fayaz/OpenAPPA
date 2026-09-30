@@ -648,7 +648,19 @@ impl LogStore {
             Store::Postgres(pg) => pg.roots_mentioning_prefix(prefix),
         }
     }
+}
 
+/// The least string above every key that starts with `prefix`, for a range scan over the
+/// key index. Holds for a non-empty ASCII prefix whose last char is not `\x7f`, which every
+/// caller's constant key prefix is.
+fn prefix_upper(prefix: &str) -> String {
+    let mut upper = prefix.to_owned();
+    let last = upper.pop().expect("a key prefix is non-empty");
+    upper.push(char::from(u8::try_from(last).expect("a key prefix is ASCII") + 1));
+    upper
+}
+
+impl LogStore {
     /// One batch at one position, and the key row beside it where the batch names a key.
     fn append_at(&self, root: &TrajectoryId, basis: u64, bytes: Vec<u8>, key: Option<&str>) -> Result<(), AppendError> {
         match &self.store {
@@ -1315,6 +1327,12 @@ mod tests {
             Vec::new()
         );
         assert_eq!(store.roots_mentioning_prefix("peer-address:").unwrap(), vec![root()]);
+        assert_eq!(
+            store.roots_mentioning_prefix("peer-address:uds:/tmp/a").unwrap(),
+            vec![root()]
+        );
+        assert_eq!(store.roots_mentioning_prefix("peer-").unwrap(), vec![root()]);
+        assert_eq!(store.roots_mentioning_prefix("peer-address;").unwrap(), Vec::new());
         assert_eq!(
             store.roots_mentioning_prefix("peer-address:uds:/tmp/b").unwrap(),
             Vec::new()
