@@ -41,6 +41,55 @@ APPA's statusline for the sessions it starts, preserves an existing policy,
 and starts the runtime. The [Claude Code integration guide](../marketplace/plugins/claude-code/README.md)
 covers the complete flow.
 
+## Battery tokens
+
+`appa ui` serves a page that asks for one battery's token:
+
+```sh
+appa ui --config /path/to/appa.toml --battery slack
+```
+
+The page shows only the token field, and a CLI sign-in when the battery
+declares one. **Save** stores the token and runs the battery's bounded
+read-only check. When the battery is ready, the page says so, and the command
+prints the battery's status as JSON, in the same shape as
+`appa battery status --json`, and exits. It exits with an error after 15
+minutes or on Ctrl-C. The status never contains the token.
+
+A battery is ready when nothing it needs is missing: its declared executables,
+the variables its policy binds as `token_env`, and the result of its provider
+check when it declares one. A battery that declares nothing is ready. Without
+a provider check, a set token is ready but untested. `appa describe` runs the
+same checks for configured batteries.
+
+The page takes a free port on `127.0.0.1` (`--port` overrides it). It works
+whether or not the runtime is running, so a runtime that refuses to start for
+a missing token can be fixed from the page. If a runtime is running, a save
+reloads it; a failed reload keeps the running policy and the page shows why.
+If no runtime is running, the next session starts one with the saved token.
+Use `--no-open` to print the address without opening a browser.
+`--runtime-url` names the runtime to ask; the page uses it only when it serves
+the same configuration. No login, session token, or expiring link is required.
+The page and its credential API are restricted to loopback, with Host and
+browser-origin checks.
+
+Credentials live in `credentials.db` beside the canonical configuration file,
+scoped by that configuration's path. This is separate from the trajectory database
+and its diagnostic exports. Values are plaintext at rest; Unix database permissions
+are `0600`. Do not include this file in source control or deployment bundles.
+
+The runtime's environment takes precedence over saved values, including an explicitly
+empty environment value. Otherwise APPA supplies the saved value under the same
+`APPA_PROVIDER_*` variable the helper already reads. An absent value leaves existing
+battery CLI fallbacks available. Each helper receives only its declared APPA
+credential. Embedding hosts, including Archestra, retain environment-only behavior.
+
+While a runtime is running, the page's prerequisite inspection and connection
+checks run in the runtime's environment, through its loopback-only `/prerequisites`
+and `/battery-check` routes. Without a runtime they run in the environment of
+`appa ui`, which can differ, for example in `PATH`.
+The page configures battery helpers; it does not authenticate MCP connectors.
+
 ## Development quickstart
 
 ### 1. Build

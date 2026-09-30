@@ -719,8 +719,9 @@ impl Deployment {
             .annotators()
             .filter_map(|(name, binding)| binding.builtin.map(|builtin| (name.as_str().to_string(), builtin)))
             .collect();
-        let externals = ExternalServices::new(config.externals.clone(), modules, annotator_builtins, gates)
+        let mut externals = ExternalServices::new(config.externals.clone(), modules, annotator_builtins, gates)
             .map_err(|error| OpenError::Modules(error.to_string()))?;
+        externals.credential_store = config.credential_store.clone();
         Ok(Deployment {
             config,
             resident: RuntimeEngine::from_policy(&policy, naming),
@@ -1596,6 +1597,12 @@ impl Runtime {
             outcome,
             admitted,
         }))
+    }
+
+    /// The batteries the serving deployment includes.
+    #[cfg(feature = "daemon")]
+    pub(crate) fn included_batteries(&self) -> Vec<String> {
+        self.inner.deployment().config.included_batteries().to_vec()
     }
 
     /// The policy file key the serving deployment answers under. An install compares it
