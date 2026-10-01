@@ -3453,7 +3453,7 @@ fn return_instruction(
              tool again with the same arguments. The subagent starts at this session's label, now {floor}. Its floor \
              must cover every narrowing its task needs. Set `trust` to the lowest rank it may read and `audience` to \
              the narrowest audience its data may be confined to. Remove either field from the call when that dimension \
-             should keep its current value.\n    {call}, with \
+             should keep its current value. Returning no final value does not relax this floor.\n    {call}, with \
              <rank> one of {ranks} (lowest first), and each <audience-entry> a built-in audience, configured group, \
              or reader ID from the policy; add audience entries as needed"
             )
@@ -3462,29 +3462,38 @@ fn return_instruction(
             let call = remedy_call(
                 control,
                 id,
-                &format!(", label: {floor}, return_schema: {{type: \"object\", ...}}"),
+                ", label: {audience: [\"<audience-entry>\"]}, return_schema: {type: \"object\", ...}",
                 description,
                 include_display_plan,
             );
             format!(
                 "  - Attest the subagent's return: declare the floor and the JSON schema its return must match. The \
+             floor must cover every audience narrowing its task needs, even when the subagent returns no final value. \
+             `attest-schema` unbinds trust by raising the return's trust; it does not widen or unbind audience. Set \
+             `audience` to the narrowest audience its data may be confined to, and omit `trust` because this sanitizer \
+             already unbinds it. The \
              schema is strict: an object lists its `properties`, every one `required`, and is closed as written \
              (no `additionalProperties`); an integer carries `minimum` and `maximum`; a string leaf carries \
              `enum`, `const`, or `format`, never free text. The return is delivered at the attestation's \
-             label.\n    {call}"
+             label.\n    {call}, with each <audience-entry> a built-in audience, configured group, or reader ID \
+             from the policy; add audience entries as needed"
             )
         }
         Some(name) => {
             let call = remedy_call(
                 control,
                 id,
-                &format!(", label: {floor}"),
+                ", label: {trust: \"<rank>\", audience: [\"<audience-entry>\"]}",
                 description,
                 include_display_plan,
             );
             format!(
                 "  - Have sanitizer {} rewrite the subagent's return before this session receives it, and declare the \
-             floor.\n    {call}",
+             floor. The floor must cover every narrowing its task needs on dimensions the sanitizer does not raise, even \
+             when the subagent returns no final value. Set every bound dimension low enough for the data the subagent \
+             must read.\n    {call}, with <rank> one of {ranks} (lowest first), and each \
+             <audience-entry> a built-in audience, configured group, or reader ID from the policy; add audience entries \
+             as needed",
                 terminal_safe(name.as_str()),
             )
         }
@@ -3810,14 +3819,18 @@ fn fork_advice_text(advice: ForkAdvice, remedies_required: bool) -> String {
     } else {
         "this call and all work that uses its result"
     };
+    let declare_floor = "When the spawn asks for a return declaration, choose a floor and sanitizer whose combined \
+                         route permits every narrowing the delegated work needs. A sanitizer unbinds only the dimension \
+                         it raises. Returning nothing controls what crosses back; it does not relax what the child may \
+                         read or accept under that route.";
     match (standing, sanitized_return) {
         (FloorStanding::Unbound, true) => format!(
-            "If a child-session or subagent tool is available, delegate {delegated} there.\nFinish there \
-             by returning nothing, or return only a sanitized derivation. Returning the raw value applies the same \
-             change to this session."
+            "If a child-session or subagent tool is available, delegate {delegated} there.\n{declare_floor}\nFinish \
+             there by returning nothing, or choose a registered return sanitizer whose declared permit covers the \
+             narrowed dimensions. Returning the raw value applies the same change to this session."
         ),
         (FloorStanding::Unbound, false) => format!(
-            "If a child-session or subagent tool is available, delegate {delegated} there.\nNo \
+            "If a child-session or subagent tool is available, delegate {delegated} there.\n{declare_floor}\nNo \
              registered return sanitizer carries this change back without applying it here, so finish there by \
              returning nothing: a returned value applies the same change to this session."
         ),

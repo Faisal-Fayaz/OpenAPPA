@@ -238,6 +238,20 @@ fn floored_at(trust: &str) -> RemedyArguments {
     }
 }
 
+fn attested_at(audience: Option<&str>) -> RemedyArguments {
+    RemedyArguments {
+        label: Some(LabelSpelling {
+            trust: None,
+            audience: audience.map(|audience| vec![audience.to_string()]),
+        }),
+        return_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": { "status": { "type": "string", "enum": ["posted", "failed"] } },
+            "required": ["status"],
+        })),
+    }
+}
+
 /// Propose the recorded spawn: blocked on the return menu, the parent declares the
 /// return through `route` (none: as spoken) with `arguments`. The re-proposed spawn
 /// then releases, as `replay` asserts.
@@ -432,6 +446,113 @@ async fn a_subagent_under_the_parents_own_floor_cannot_accept_a_suspicious_read(
         offers(reason).is_empty(),
         "no acceptance below the declared floor is offered: {reason}"
     );
+}
+
+/// Delegation can isolate a suspicious, private read only when the return declaration permits
+/// both dimensions in the child. Attestation unbinds trust, but a public audience floor still
+/// refuses the read. Declaring the private audience admits it, and an empty return then ends the
+/// child without narrowing the parent.
+#[tokio::test]
+async fn delegation_guidance_leads_to_a_floor_that_admits_the_private_read_before_an_empty_return() {
+    let make_runtime = || deployment("", "", "delta = { trust = \"suspicious\", audience = [\"self\"] }");
+    let events = ASYNC.events();
+    let spawn = hook(&events, "PreToolUse", Some("Agent"), false);
+    let read = hook(&events, "PreToolUse", Some("Bash"), true);
+    let start = index_of(&events, &hook(&events, "SubagentStart", None, true));
+    let ack = index_of(&events, &hook(&events, "PostToolUse", Some("Agent"), false));
+
+    let incompatible = make_runtime();
+    replay(&incompatible, &events[..1]).await;
+    let (status, answer) = call(&incompatible, &as_root(read.clone())).await;
+    assert_eq!(status, 200);
+    let guidance = answer["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("the root's narrowing block carries delegation guidance");
+    assert!(
+        guidance.contains("choose a floor and sanitizer whose combined route permits every narrowing"),
+        "{guidance}"
+    );
+    assert!(
+        guidance.contains("Returning nothing controls what crosses back; it does not relax what the child may"),
+        "{guidance}"
+    );
+
+    let HookDecision::DenyCall { feedback, .. } = hooks::handle(&incompatible, parsed(&spawn)).await else {
+        panic!("the spawn asks for its return declaration");
+    };
+    assert!(
+        feedback.contains(
+            "`attest-schema` unbinds trust by raising the return's trust; it does not widen or unbind audience"
+        ),
+        "{feedback}"
+    );
+    assert!(
+        feedback.contains("label: {audience: [\"<audience-entry>\"]}"),
+        "the attestation route asks for its bound audience dimension: {feedback}"
+    );
+
+    declare_spawn(&incompatible, &spawn, Some("attest-schema"), attested_at(None)).await;
+    replay(&incompatible, &events[1..start]).await;
+    let (status, answer) = call(&incompatible, &events[start]).await;
+    assert_eq!(status, 200);
+    assert!(
+        answer["hookSpecificOutput"]["additionalContext"].is_string(),
+        "the attested spawn tells the child its return schema: {answer}"
+    );
+    replay(&incompatible, &events[start + 1..=ack]).await;
+    let (status, answer) = call(&incompatible, &read).await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny", "{answer}");
+    let reason = answer["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("the incompatible child read carries its refusal");
+    assert!(
+        offers(reason).is_empty(),
+        "attestation does not unbind the public audience floor: {reason}"
+    );
+
+    let compatible = make_runtime();
+    replay(&compatible, &events[..1]).await;
+    declare_spawn(&compatible, &spawn, Some("attest-schema"), attested_at(Some("self"))).await;
+    replay(&compatible, &events[1..start]).await;
+    let (status, answer) = call(&compatible, &events[start]).await;
+    assert_eq!(status, 200);
+    assert!(
+        answer["hookSpecificOutput"]["additionalContext"].is_string(),
+        "the attested spawn tells the child its return schema: {answer}"
+    );
+    replay(&compatible, &events[start + 1..=ack]).await;
+    let (status, answer) = call(&compatible, &read).await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny", "{answer}");
+    let reason = answer["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("the compatible child read carries its acceptance offer");
+    let offer = offers(reason)
+        .pop()
+        .expect("the private audience floor permits accepting the suspicious/private read");
+    let accepted = compatible
+        .execute_remedy(
+            &Actor {
+                root: ASYNC.root(),
+                child: Some(ASYNC.child()),
+            },
+            offer,
+        )
+        .await;
+    assert!(matches!(accepted, RemedyOutcome::Authorized { .. }), "{accepted:?}");
+    replay(&compatible, &[read, hook(&events, "PostToolUse", Some("Bash"), true)]).await;
+
+    let mut empty_stop = child_stop(&events);
+    empty_stop["last_assistant_message"] = serde_json::json!("");
+    let (status, answer) = call(&compatible, &empty_stop).await;
+    assert_eq!((status, answer), (200, serde_json::json!({})));
+    assert!(
+        returns(&compatible, &ASYNC.root()).is_empty(),
+        "an empty stop crosses no value"
+    );
+    let parent = compatible.status(&ASYNC.root()).expect("the parent answers");
+    assert_eq!((parent.trust.as_str(), parent.audience.as_str()), ("trusted", "public"));
 }
 
 /// The parent declared at the spawn that it takes a suspicious return. The subagent
