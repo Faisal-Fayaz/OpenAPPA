@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.31.0](https://github.com/archestra-ai/OpenAPPA/compare/v0.30.0...v0.31.0) (2026-10-01)
+
+
+### Features
+
+* Claude Code's Workflow as a fan-out spawn ([#555](https://github.com/archestra-ai/OpenAPPA/issues/555)) ([d0fa527](https://github.com/archestra-ai/OpenAPPA/commit/d0fa527c994c59a43dfd55e34e9d732b3a2406ef))
+* **claude-code:** cover DesignSync, RemoteTrigger and SendFeedback in the default policy ([#553](https://github.com/archestra-ai/OpenAPPA/issues/553)) ([2f28c84](https://github.com/archestra-ai/OpenAPPA/commit/2f28c84efcd465def0d84844d390e5b256f5d229))
+* **claude-code:** the battery labels PowerShell calls as it labels Bash ([#556](https://github.com/archestra-ai/OpenAPPA/issues/556)) ([6710c7f](https://github.com/archestra-ai/OpenAPPA/commit/6710c7f22ba2c94ae1b269cd4c5330bc5c24d322))
+
+
+### Documentation
+
+* agent panel in README, benchmark TLDR, Fireship video on main page ([#563](https://github.com/archestra-ai/OpenAPPA/issues/563)) ([8ee91c5](https://github.com/archestra-ai/OpenAPPA/commit/8ee91c55327747d270b7a4495af8f43e328bb245))
+* **readme:** drop redundant install and status notes ([#559](https://github.com/archestra-ai/OpenAPPA/issues/559)) ([9ffa6c5](https://github.com/archestra-ai/OpenAPPA/commit/9ffa6c530d3e8d83fea05ad74a95e3bcfec042c4))
+* **readme:** link validation, drop the appa yell section ([#561](https://github.com/archestra-ai/OpenAPPA/issues/561)) ([fdfc640](https://github.com/archestra-ai/OpenAPPA/commit/fdfc6402807fdb6288a9282dd979d622122cea33))
+* **readme:** match benchmark section to landing page ([#562](https://github.com/archestra-ai/OpenAPPA/issues/562)) ([ea093be](https://github.com/archestra-ai/OpenAPPA/commit/ea093beb1ea09225c935969120d970c9b9c468bc))
+* **readme:** show the clappa and /appa-guide setup step ([#558](https://github.com/archestra-ai/OpenAPPA/issues/558)) ([141fbd6](https://github.com/archestra-ai/OpenAPPA/commit/141fbd6266542e7f3c6437862e26f7baa435b179))
+
+
+### Code Refactoring
+
+* **runtime:** collapse pass-through layers and duplicated helpers ([#565](https://github.com/archestra-ai/OpenAPPA/issues/565)) ([01c6633](https://github.com/archestra-ai/OpenAPPA/commit/01c6633d55987c6b0aa328c8ccce71e83c32b49e))
+
 ## [0.30.0](https://github.com/archestra-ai/OpenAPPA/compare/v0.29.1...v0.30.0) (2026-09-30)
 
 
