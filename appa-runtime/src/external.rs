@@ -1153,7 +1153,12 @@ async fn run_command_process(
     }
     let stderr = stderr.and_then(|stderr| stderr.error_line()).unwrap_or_default();
     tracing::warn!(code = ?status.code(), stderr = %stderr, "the command exited without an answer");
-    Err(NoAnswerReason::Transport)
+    match status.code().and_then(|code| u16::try_from(code).ok()) {
+        Some(status) => Err(NoAnswerReason::NonSuccess { status, detail: None }),
+        // A signal or another platform-specific status establishes no useful failure
+        // classification. The stderr tail remains confined to logs and the recorder.
+        None => Err(NoAnswerReason::Transport),
+    }
 }
 
 fn classify_transport(error: reqwest::Error) -> NoAnswerReason {
@@ -1757,7 +1762,15 @@ printf '%s' '{"version":1,"answer":{"delta.trust":"trusted"}}'"#,
         );
 
         for (script, timeout_ms, cap, expected) in [
-            ("exit 7", budget_ms(), 1024, NoAnswerReason::Transport),
+            (
+                "exit 7",
+                budget_ms(),
+                1024,
+                NoAnswerReason::NonSuccess {
+                    status: 7,
+                    detail: None,
+                },
+            ),
             ("sleep 5", 20, 1024, NoAnswerReason::Timeout),
             ("printf 'xxxxxxxx'", budget_ms(), 4, NoAnswerReason::Oversized),
             ("printf 'not-json'", budget_ms(), 1024, NoAnswerReason::Malformed),
@@ -1777,7 +1790,10 @@ printf '%s' '{"version":1,"answer":{"delta.trust":"trusted"}}'"#,
                 "printf '%s' '{\"version\":1,\"answer\":{\"delta.trust\":\"trusted\"}}'; exit 7",
                 budget_ms(),
                 1024,
-                NoAnswerReason::Transport,
+                NoAnswerReason::NonSuccess {
+                    status: 7,
+                    detail: None,
+                },
             ),
         ] {
             assert_eq!(
@@ -2729,7 +2745,17 @@ printf '%s' '{"version":1,"answer":{"delta.trust":"trusted"}}'"#,
         let services = command_services(dir.path(), script, 5000, 1024);
         let consult = authority_consult("security", serde_json::json!({}));
         let (transcribed, transcript) = services.consult_transcribed(&consult, None, None).await;
-        assert_eq!(transcribed, ConsultOutcome::NoAnswer(NoAnswerReason::Transport));
+        assert_eq!(
+            transcribed,
+            ConsultOutcome::NoAnswer(NoAnswerReason::NonSuccess {
+                status: 3,
+                detail: None
+            })
+        );
+        assert_eq!(
+            crate::events::ExternalOutcome::from(&transcribed),
+            crate::events::ExternalOutcome::NoAnswer(crate::events::NoAnswerClass::NonSuccess { status: 3 })
+        );
         assert_eq!(transcribed, services.consult(&consult, None, None).await);
         let transcript = transcript.expect("a command consult is transcribed");
         assert_eq!(transcript.backend, ConsultBackend::Command);

@@ -205,14 +205,14 @@ pub enum ExternalEvidence {
     AudienceSource {
         provider: String,
         selector: String,
-        members: Option<Vec<ReaderId>>,
+        members: Result<Vec<ReaderId>, crate::events::NoAnswerClass>,
     },
     MemberLookup {
         provider: String,
         member: String,
-        /// `None`: the consult produced no answer. `Some(None)`: the answering entry
-        /// definitively does not know the member, who keeps its qualified identity.
-        principal: Option<Option<ReaderId>>,
+        /// `Ok(None)`: the answering entry definitively does not know the member, who keeps
+        /// its qualified identity. `Err`: the consult produced no usable answer.
+        principal: Result<Option<ReaderId>, crate::events::NoAnswerClass>,
     },
 }
 
@@ -2491,16 +2491,19 @@ impl RuntimeEngine {
                         continue;
                     }
                     match members {
-                        Some(members) => payload.sources.push(SourceClaims {
+                        Ok(members) => payload.sources.push(SourceClaims {
                             provider: provider.clone(),
                             selector: selector.clone(),
                             members: members.clone(),
                         }),
-                        None => {
-                            unanswered.selectors.insert(SelectorSpec {
-                                provider: provider.clone(),
-                                selector: selector.clone(),
-                            });
+                        Err(reason) => {
+                            unanswered.selectors.insert(
+                                SelectorSpec {
+                                    provider: provider.clone(),
+                                    selector: selector.clone(),
+                                },
+                                *reason,
+                            );
                         }
                     }
                 }
@@ -2513,13 +2516,13 @@ impl RuntimeEngine {
                         continue;
                     }
                     match principal {
-                        Some(principal) => payload.lookups.push(MemberLookup {
+                        Ok(principal) => payload.lookups.push(MemberLookup {
                             provider: provider.clone(),
                             member: member.clone(),
                             principal: principal.clone(),
                         }),
-                        None => {
-                            unanswered.members.insert(member.clone());
+                        Err(reason) => {
+                            unanswered.members.insert(member.clone(), *reason);
                         }
                     }
                 }
@@ -2538,11 +2541,12 @@ impl RuntimeEngine {
         }
         let mut requests: Vec<ExternalRequest> = Vec::new();
         for owed in audience.member_lookups_owed(&payload) {
-            if unanswered.members.contains(&owed.member) {
+            if let Some(reason) = unanswered.members.get(&owed.member) {
                 // The member is directory data the model has not seen.
-                return Err(AudienceFailure::Refused(format!(
-                    "audience source {} gave no answer for a member lookup",
-                    owed.provider
+                return Err(AudienceFailure::Refused(audience_failure(
+                    &owed.provider,
+                    "a member lookup",
+                    *reason,
                 )));
             }
             let templates = selector_templates(audience, &owed.provider)
@@ -2583,10 +2587,11 @@ impl RuntimeEngine {
             if answered {
                 continue;
             }
-            if act.unanswered.selectors.contains(spec) {
-                return Ok(AudienceConsult::Unresolved(format!(
-                    "audience source {} gave no answer for {}",
-                    spec.provider, spec.selector
+            if let Some(reason) = act.unanswered.selectors.get(spec) {
+                return Ok(AudienceConsult::Unresolved(audience_failure(
+                    &spec.provider,
+                    &spec.selector,
+                    *reason,
                 )));
             }
             requests.push(ExternalRequest::AudienceSource {
@@ -2599,11 +2604,12 @@ impl RuntimeEngine {
             if act.payload.lookups.iter().any(|lookup| lookup.member == spec.member) {
                 continue;
             }
-            if act.unanswered.members.contains(&spec.member) {
+            if let Some(reason) = act.unanswered.members.get(&spec.member) {
                 // The member can be a reader a delta wrote that the model never saw.
-                return Ok(AudienceConsult::Unresolved(format!(
-                    "audience source {} gave no answer for a member lookup",
-                    spec.provider
+                return Ok(AudienceConsult::Unresolved(audience_failure(
+                    &spec.provider,
+                    "a member lookup",
+                    *reason,
                 )));
             }
             requests.push(member_lookup(
@@ -2723,7 +2729,51 @@ fn annotation_args(
 }
 
 fn unresolved_audience(tool: &str, detail: &str) -> String {
-    format!("[appa] {tool}: {detail}; the call was not checked — propose it again later")
+    format!("[appa] {tool}: {detail}; the call was not checked")
+}
+
+/// Safe model-visible guidance for one audience consult failure. The class carries no
+/// external response or stderr. In particular, a non-success status says nothing about
+/// retryability.
+fn audience_failure(provider: &str, subject: &str, reason: crate::events::NoAnswerClass) -> String {
+    use crate::events::NoAnswerClass;
+
+    let failure = format!("audience source {provider} gave no answer for {subject}");
+    match reason {
+        NoAnswerClass::Unregistered => {
+            format!("{failure}: no implementation is configured; an operator must repair the deployment configuration")
+        }
+        NoAnswerClass::Unreachable => {
+            format!(
+                "{failure}: its configured implementation cannot be reached; an operator must repair the deployment configuration or environment"
+            )
+        }
+        NoAnswerClass::Timeout => format!("{failure}: the request timed out; retrying later may succeed"),
+        NoAnswerClass::NonSuccess { status } => format!(
+            "{failure}: it returned non-success status {status}; the cause and retryability are unknown, so ask an operator to inspect the runtime diagnostics"
+        ),
+        NoAnswerClass::Transport => format!(
+            "{failure}: the transport failed for an unknown reason; retryability is unknown, so ask an operator to inspect the runtime diagnostics"
+        ),
+        NoAnswerClass::Malformed => {
+            format!(
+                "{failure}: it returned a malformed answer; an operator must repair the audience-source integration"
+            )
+        }
+        NoAnswerClass::Oversized => {
+            format!(
+                "{failure}: its answer exceeded the configured size limit; an operator must repair the audience-source integration"
+            )
+        }
+        NoAnswerClass::UnsupportedVersion => format!(
+            "{failure}: it used an unsupported protocol version; an operator must repair the audience-source integration"
+        ),
+        NoAnswerClass::ModuleError | NoAnswerClass::ModulePanicked => {
+            format!("{failure}: its module failed; an operator must repair the audience-source integration")
+        }
+        #[cfg(feature = "daemon")]
+        NoAnswerClass::Dismissed => format!("{failure}: the request was dismissed; no retryability is known"),
+    }
 }
 
 fn unconfigured_audience(level: ChainAudience) -> String {
@@ -2751,7 +2801,8 @@ struct Resolution(Vec<ExternalRequest>);
 
 enum AudienceConsult {
     Requests(Vec<ExternalRequest>),
-    /// An answer this trajectory did not obtain; proposing again can obtain it.
+    /// An answer this trajectory did not obtain, with safe guidance based on the known
+    /// failure class.
     Unresolved(String),
     /// A built-in level the loaded policy maps to no sources; proposing again cannot
     /// change the answer.
@@ -2765,9 +2816,9 @@ enum AudienceConsult {
 enum UnresolvedAudience<'a> {
     /// The proposed call is denied.
     Denied { tool: &'a str },
-    /// The value — a tool result or a child's return — is withheld and may be retried.
+    /// The value — a tool result or a child's return — is withheld.
     Withheld { subject: &'static str },
-    /// The offer stands and may be executed again.
+    /// The offer stands.
     OfferStands,
 }
 
@@ -2776,11 +2827,9 @@ impl UnresolvedAudience<'_> {
         match self {
             UnresolvedAudience::Denied { tool } => deny(unresolved_audience(&naming.model_spelling(tool), detail)),
             UnresolvedAudience::Withheld { subject } => EngineDecision::deliver(Next::PresentToModel(
-                blocked_without_offers(format!("[appa] {detail}; the {subject} is withheld and may be retried")),
+                blocked_without_offers(format!("[appa] {detail}; the {subject} is withheld")),
             )),
-            UnresolvedAudience::OfferStands => {
-                no_answer(format!("[appa] {detail}; the offer stands and may be executed again"))
-            }
+            UnresolvedAudience::OfferStands => no_answer(format!("[appa] {detail}; the offer stands")),
         }
     }
 
@@ -2854,9 +2903,9 @@ fn member_lookup(
 
 #[derive(Debug, Default)]
 struct Unanswered {
-    selectors: BTreeSet<SelectorSpec>,
+    selectors: BTreeMap<SelectorSpec, crate::events::NoAnswerClass>,
     /// Qualified members whose lookup produced no answer.
-    members: BTreeSet<String>,
+    members: BTreeMap<String, crate::events::NoAnswerClass>,
 }
 
 fn deny(text: String) -> EngineDecision {
@@ -3869,7 +3918,8 @@ mod tests {
     use super::{
         BARE_CONTROL_TOOL, EngineEvent, EngineView, ExternalEvidence, ExternalRequest, Next, OfferId, OfferNonce,
         Presentation, ProposedCall, Resolution, ReturnBounds, RuntimeEngine, SanitizerSubject, TrajectoryId,
-        audience_wire, block_feedback, outcome_presentation, remedy_instruction, remedy_lines, terminal_safe,
+        audience_failure, audience_wire, block_feedback, outcome_presentation, remedy_instruction, remedy_lines,
+        terminal_safe, unresolved_audience,
     };
     use crate::api::{EmbeddedPresentationOptions, ToolNaming, ToolOutcome};
     use crate::consult::{AnnotationAnswer, HistoryEntry, RequiredAudienceAnswer, SanitizerPoint};
@@ -3881,6 +3931,35 @@ mod tests {
     use appa_engine::names::{AnnotatorName, MarkName, SanitizerName};
     use appa_engine::plan::{ExecutableRemedyPlan, PlanId, PlannedBlock, RemedyPlan, RemedyStep};
     use appa_engine::value::{RawResultDigest, ToolName, ValueBody};
+
+    #[test]
+    fn audience_failure_guidance_distinguishes_repair_retry_and_unknown() {
+        use crate::events::NoAnswerClass;
+
+        let unregistered = audience_failure("slack", "channel/eng", NoAnswerClass::Unregistered);
+        assert!(unregistered.contains("operator must repair the deployment configuration"));
+        assert!(!unregistered.contains("retrying"));
+
+        let timeout = audience_failure("slack", "channel/eng", NoAnswerClass::Timeout);
+        assert!(timeout.contains("timed out; retrying later may succeed"));
+
+        let failed = audience_failure("slack", "channel/eng", NoAnswerClass::NonSuccess { status: 7 });
+        assert!(failed.contains("non-success status 7"));
+        assert!(failed.contains("cause and retryability are unknown"));
+        assert!(!failed.contains("propose it again"));
+    }
+
+    #[test]
+    fn audience_failure_feedback_contains_only_the_safe_classification() {
+        let detail = audience_failure("slack", "a member lookup", crate::events::NoAnswerClass::Transport);
+        let feedback = unresolved_audience("SlackSend", &detail);
+
+        assert_eq!(
+            feedback,
+            "[appa] SlackSend: audience source slack gave no answer for a member lookup: the transport failed for an unknown reason; retryability is unknown, so ask an operator to inspect the runtime diagnostics; the call was not checked"
+        );
+        assert!(!feedback.contains("propose it again later"));
+    }
 
     #[test]
     fn a_parent_floor_restricts_raw_results_not_offered_output_sanitizers() {

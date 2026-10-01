@@ -1661,8 +1661,9 @@ impl Session {
                 let consult = Consult::audience_selector(provider, selector, templates.clone());
                 let members = match self.timed_consult(&consult, None, None, occasion, None).await {
                     ConsultOutcome::Answer(answer) => MembersAnswer::from_wire(&answer)
-                        .map(|answer| answer.members.into_iter().map(ReaderId::new).collect()),
-                    ConsultOutcome::NoAnswer(_) => None,
+                        .map(|answer| answer.members.into_iter().map(ReaderId::new).collect())
+                        .ok_or(crate::events::NoAnswerClass::Malformed),
+                    ConsultOutcome::NoAnswer(reason) => Err((&reason).into()),
                 };
                 ExternalEvidence::AudienceSource {
                     provider: provider.clone(),
@@ -1680,10 +1681,10 @@ impl Session {
                 // answered.
                 let consult = Consult::member_lookup(answering, member, templates.clone());
                 let principal = match self.timed_consult(&consult, None, None, occasion, None).await {
-                    ConsultOutcome::Answer(answer) => {
-                        LookupAnswer::from_wire(&answer).map(|answer| answer.principal.map(ReaderId::new))
-                    }
-                    ConsultOutcome::NoAnswer(_) => None,
+                    ConsultOutcome::Answer(answer) => LookupAnswer::from_wire(&answer)
+                        .map(|answer| answer.principal.map(ReaderId::new))
+                        .ok_or(crate::events::NoAnswerClass::Malformed),
+                    ConsultOutcome::NoAnswer(reason) => Err((&reason).into()),
                 };
                 ExternalEvidence::MemberLookup {
                     provider: provider.clone(),
