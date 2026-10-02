@@ -311,14 +311,26 @@ appa runtime --config /host/file-policy.toml --db /host/runtime.db \
 - Keep the policy, runtime database, and backend outside the workspace.
 - The policy must name all six file tools. A tool the policy does not name is refused, not
   annotated.
-- The policy must not use sanitizers or rewrite routes. File tracking refuses to start when
-  the registry holds any, because a rewritten call would describe paths the runtime never
-  pinned.
-- In file mode, APPA admits declared subagent spawns so children can use the workspace event stream.
-  Every other call that reaches APPA and is not one of the six file tools is refused,
-  including APPA's own management tools. Run those from the `appa` command line.
+- Tool-input sanitizers and rewrite routes are incompatible with file tracking. They can mutate
+  paths after runtime pinning. Output-only sanitizers remain supported. `confined_results` must
+  not name a runtime-owned `appa_*` file tool because its MCP result cannot be withheld.
+- Before a root binds to a workspace, all tool calls use ordinary policy admission. After binding,
+  APPA refuses Claude Code's native filesystem and shell tools. Runtime-owned file tools use the
+  workspace event stream. Other policy-named tools, including MCP integrations, continue through
+  ordinary policy admission.
 - One file operation runs at a time per canonical workspace. Every bound root and subagent shares
   that reservation.
+- **Automatic repair:** After a writer stops with no recorded outcome, the runtime attempts repair.
+  If the filesystem retains the pre-execution state, it releases the workspace reservation. If
+  the filesystem reflects a state the recorded request could produce, it records the file version
+  under the request's bound Label without marking the operation successful. An incompatible state
+  remains quarantined.
+- **Manual repair:** Stop all workspace writers before running manual repair. If automatic repair
+  did not run before a runtime crash, run `appa files repair --workspace <path>`. The command finds
+  the installed runtime database by default and applies the same repair rules.
+- **Relabelling:** Relabelling is separate from repair. Run
+  `appa files relabel --workspace <path> <file>...` to assign the configured initial Label to the
+  current contents of selected tracked files. Resolve all pending operations before relabelling.
 - `appa claude-files` is a separate constrained test launcher: it removes the native tools,
   starts Claude in a private empty directory, and serves the file tools over private stdio
   bound to a host-assigned trajectory. It is an experimental test path, not required by the
@@ -412,13 +424,18 @@ injected trajectory-outcome append failure after file publication.
   rather than confined.
 - **Precise dependencies inside a program.** Process Labels are conservative: every declared
   input contributes whether or not the command read it.
-- **Declassification.** No sanitizer or rewrite policy is supported in file mode, and no
-  operation lowers a Label.
+- **Relabelling and sanitization.** File operations derive output Labels from their recorded
+  requests and never lower those Labels during repair. Assigning selected files the configured
+  initial Label requires the explicit `appa files relabel` operator command. Tool-input sanitizers
+  and rewrite routes remain unsupported. Output-only sanitizers remain available, except on
+  runtime-owned file tools whose MCP results cannot be confined.
 - **Non-atomic filesystem boundary.** Filesystem operations and event-log commits cannot form one
-  transaction. The runtime first commits `Prepared`, which acquires the workspace reservation.
-  It then mutates the filesystem. On success, it commits `Finished` before it appends the outcome
-  to the trajectory log. A crash after mutation but before `Finished` leaves the reservation
-  blocking the workspace for operator reconciliation. A committed `Finished` event survives a
+  transaction. The runtime commits `Prepared` to acquire the reservation and `Bound` to record the
+  request's output Label. It then mutates the filesystem, commits `Finished`, and appends the
+  outcome to the trajectory log. A missing report reaches automatic repair while the runtime is
+  serving. A runtime crash can leave the reservation for `appa files repair`, which applies the
+  same rules after restart. Repair accepts only the pre-execution baseline or a state the request
+  could produce; incompatible states remain quarantined. A committed `Finished` event survives a
   later trajectory append failure, and an exact retry reuses its version and receipt. Historical
   file contents are not retained.
 - **Metadata and timing flows, resource exhaustion, kernel vulnerabilities.** Resource
