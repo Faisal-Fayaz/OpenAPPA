@@ -9,6 +9,22 @@ CREATE TABLE openappa_events (
     CONSTRAINT openappa_events_seq_nonnegative CHECK (seq >= 0)
 );
 
+CREATE TABLE openappa_file_events (
+    workspace text NOT NULL,
+    seq bigint NOT NULL,
+    payload bytea NOT NULL,
+    CONSTRAINT openappa_file_events_workspace_seq_pk PRIMARY KEY (workspace, seq),
+    CONSTRAINT openappa_file_events_seq_nonnegative CHECK (seq >= 0)
+);
+
+CREATE TABLE openappa_file_roots (
+    root text PRIMARY KEY,
+    workspace text NOT NULL,
+    seq bigint NOT NULL,
+    CONSTRAINT openappa_file_roots_seq_nonnegative CHECK (seq >= 0)
+);
+CREATE INDEX openappa_file_roots_workspace_idx ON openappa_file_roots (workspace);
+
 CREATE TABLE openappa_host_keys (
     key text NOT NULL,
     root text NOT NULL,
@@ -67,3 +83,38 @@ CREATE TABLE openappa_processed_results (
     )
 );
 CREATE INDEX openappa_results_pending_idx ON openappa_processed_results (root) WHERE status = 'pending';
+
+CREATE TABLE openappa_held_peer_messages (
+    seq bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id text NOT NULL UNIQUE,
+    receiver text NOT NULL,
+    digest text NOT NULL,
+    label jsonb NOT NULL,
+    body text NOT NULL,
+    expires_at bigint NOT NULL,
+    notified boolean NOT NULL DEFAULT false
+);
+CREATE INDEX openappa_held_peer_messages_receiver_idx ON openappa_held_peer_messages (receiver, seq);
+
+CREATE TABLE openappa_embedded_peer_messages (
+    seq bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id text NOT NULL UNIQUE,
+    root text NOT NULL,
+    sender text NOT NULL,
+    recipient text NOT NULL,
+    pending_spawn text,
+    dispatch text NOT NULL,
+    digest text NOT NULL,
+    label jsonb NOT NULL,
+    body text,
+    status text NOT NULL,
+    read_call_id text,
+    read_arguments text,
+    decision jsonb,
+    expires_at bigint NOT NULL,
+    created_at bigint NOT NULL,
+    CONSTRAINT openappa_embedded_peer_status CHECK (status IN ('held', 'direct', 'read')),
+    CONSTRAINT openappa_embedded_peer_dispatch_uidx UNIQUE (root, sender, dispatch)
+);
+CREATE INDEX openappa_embedded_peer_recipient_idx ON openappa_embedded_peer_messages (root, recipient, status);
+CREATE UNIQUE INDEX openappa_embedded_peer_read_call_uidx ON openappa_embedded_peer_messages (root, recipient, read_call_id) WHERE read_call_id IS NOT NULL;
